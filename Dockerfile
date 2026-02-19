@@ -10,7 +10,7 @@ RUN go mod download
 COPY . .
 
 # 编译
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o jmcomic-auto ./cmd/jmcomic-auto
+RUN CGO_ENABLED=0 GOOS=linux go build -o jmcomic-auto github.com/INKCR0W/jm-automation/cmd/jmcomic-auto
 
 # 运行阶段
 FROM alpine:latest
