@@ -1,0 +1,116 @@
+package scheduler
+
+import (
+	"context"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/INKCR0W/jm-automation/internal/client"
+	"github.com/INKCR0W/jm-automation/internal/config"
+	"github.com/INKCR0W/jm-automation/internal/task"
+	"github.com/INKCR0W/jm-automation/pkg/logger"
+	"github.com/robfig/cron/v3"
+)
+
+type Scheduler struct {
+	cron     *cron.Cron
+	executor *task.Executor
+	config   *config.Config
+	client   *client.Client
+}
+
+func New(cfg *config.Config) (*Scheduler, error) {
+	// 创建 HTTP 客户端
+	c, err := client.New(cfg.Server.BaseURL, cfg.Server.GetTimeout())
+	if err != nil {
+		return nil, fmt.Errorf("创建客户端失败: %w", err)
+	}
+
+	// 加载时区
+	loc, err := cfg.Scheduler.GetLocation()
+	if err != nil {
+		return nil, fmt.Errorf("加载时区失败: %w", err)
+	}
+
+	// 创建定时任务，设置时区
+	cronInstance := cron.New(cron.WithSeconds(), cron.WithLocation(loc))
+
+	return &Scheduler{
+		cron:     cronInstance,
+		executor: task.NewExecutor(c),
+		config:   cfg,
+		client:   c,
+	}, nil
+}
+
+func (s *Scheduler) Start(ctx context.Context) error {
+	// 添加定时任务
+	_, err := s.cron.AddFunc(s.config.Scheduler.Cron, func() {
+		// 每次执行时创建新的 context，避免使用已取消的 context
+		taskCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+
+		if err := s.RunOnce(taskCtx); err != nil {
+			logger.Error("定时任务执行失败", "error", err)
+		}
+	})
+	if err != nil {
+		return fmt.Errorf("添加定时任务失败: %w", err)
+	}
+
+	s.cron.Start()
+	return nil
+}
+
+func (s *Scheduler) Stop() {
+	if s.cron != nil {
+		s.cron.Stop()
+	}
+}
+
+func (s *Scheduler) RunOnce(ctx context.Context) error {
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(s.config.Accounts))
+
+	for _, account := range s.config.Accounts {
+		if !account.Enabled {
+			logger.Info("账号已禁用，跳过", "username", account.Username)
+			continue
+		}
+
+		wg.Add(1)
+		go func(acc config.Account) {
+			defer wg.Done()
+
+			// 每个账号使用独立的客户端实例
+			c, err := client.New(s.config.Server.BaseURL, s.config.Server.GetTimeout())
+			if err != nil {
+				logger.Error("创建客户端失败", "username", acc.Username, "error", err)
+				errCh <- err
+				return
+			}
+
+			executor := task.NewExecutor(c)
+			if err := executor.Execute(ctx, acc); err != nil {
+				logger.Error("账号任务执行失败", "username", acc.Username, "error", err)
+				errCh <- err
+			}
+		}(account)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	// 收集错误
+	var errs []error
+	for err := range errCh {
+		errs = append(errs, err)
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("部分账号执行失败，错误数: %d", len(errs))
+	}
+
+	return nil
+}

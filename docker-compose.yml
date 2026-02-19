@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  jmcomic-auto:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jmcomic-auto
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./logs:/app/logs
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

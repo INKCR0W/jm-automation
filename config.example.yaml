@@ -1,0 +1,24 @@
+server:
+  base_url: "https://www.cdnsha.org"
+  timeout: 30  # 超时时间（秒）
+
+accounts:
+  - username: "your_username"
+    password: "your_password"
+    enabled: true  # 必须明确设置为 true 才会启用
+  # 可以添加多个账号
+  # - username: "another_user"
+  #   password: "another_pass"
+  #   enabled: true
+
+scheduler:
+  # cron 表达式：秒 分 时 日 月 周
+  # 每天早上 9 点执行
+  cron: "0 0 9 * * *"
+  timezone: "Asia/Shanghai"
+
+log:
+  level: "info"  # debug, info, warn, error
+  file: "logs/app.log"
+  max_size: 100  # MB
+  max_backups: 7
