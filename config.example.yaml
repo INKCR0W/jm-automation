@@ -16,6 +16,9 @@ scheduler:
   # 每天早上 9 点执行
   cron: "0 0 9 * * *"
   timezone: "Asia/Shanghai"
+  # 随机延迟时间（分钟），在定时任务触发后随机延迟 0-N 分钟执行，模拟人工操作
+  # 例如设置为 30，则会在 9:00-9:30 之间随机执行
+  random_delay: 30
 
 log:
   level: "info"  # debug, info, warn, error

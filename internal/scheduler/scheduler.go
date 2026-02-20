@@ -47,6 +47,13 @@ func New(cfg *config.Config) (*Scheduler, error) {
 func (s *Scheduler) Start(ctx context.Context) error {
 	// 添加定时任务
 	_, err := s.cron.AddFunc(s.config.Scheduler.Cron, func() {
+		// 添加随机延迟
+		if s.config.Scheduler.RandomDelay > 0 {
+			delay := s.getRandomDelay()
+			logger.Info("添加随机延迟", "delay", delay)
+			time.Sleep(delay)
+		}
+
 		// 每次执行时创建新的 context，避免使用已取消的 context
 		taskCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
@@ -61,6 +68,18 @@ func (s *Scheduler) Start(ctx context.Context) error {
 
 	s.cron.Start()
 	return nil
+}
+
+// getRandomDelay 获取随机延迟时间
+func (s *Scheduler) getRandomDelay() time.Duration {
+	maxMinutes := s.config.Scheduler.RandomDelay
+	if maxMinutes <= 0 {
+		return 0
+	}
+
+	// 生成 0 到 maxMinutes 之间的随机分钟数
+	randomMinutes := time.Now().UnixNano() % int64(maxMinutes)
+	return time.Duration(randomMinutes) * time.Minute
 }
 
 func (s *Scheduler) Stop() {

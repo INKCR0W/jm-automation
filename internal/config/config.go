@@ -27,8 +27,9 @@ type Account struct {
 }
 
 type SchedulerConfig struct {
-	Cron     string `yaml:"cron"`
-	Timezone string `yaml:"timezone"`
+	Cron        string `yaml:"cron"`
+	Timezone    string `yaml:"timezone"`
+	RandomDelay int    `yaml:"random_delay"`
 }
 
 type LogConfig struct {
@@ -55,6 +56,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Scheduler.Timezone == "" {
 		cfg.Scheduler.Timezone = "Asia/Shanghai"
+	}
+	if cfg.Scheduler.RandomDelay == 0 {
+		cfg.Scheduler.RandomDelay = 30 // 默认 30 分钟随机延迟
 	}
 	if cfg.Log.Level == "" {
 		cfg.Log.Level = "info"
