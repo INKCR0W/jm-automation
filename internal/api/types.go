@@ -28,13 +28,15 @@ type DailyListRequest struct {
 
 // 每日任务项
 type DailyTask struct {
-	DailyID string `json:"daily_id"`
-	Name    string `json:"name"`
+	ID    string `json:"id"`
+	Year  string `json:"year"`
+	Month string `json:"month"`
+	Img   string `json:"img"`
 }
 
 // 每日任务列表响应（解密后）
 type DailyListData struct {
-	Tasks []DailyTask `json:"tasks"`
+	List []DailyTask `json:"list"`
 }
 
 // 签到请求
@@ -47,6 +49,7 @@ type DailyChkRequest struct {
 type DailyChkData struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
+	Msg     string `json:"msg"`
 }
 
 // 漫画详情响应（解密后）
