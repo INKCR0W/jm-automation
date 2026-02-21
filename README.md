@@ -7,6 +7,7 @@
 - 自动登录和每日签到
 - 多账号支持
 - 定时任务调度
+- 随机延迟
 - Docker 部署
 
 ## 快速开始
@@ -50,7 +51,34 @@ go build -o jmcomic-auto cmd/jmcomic-auto/main.go
 ./jmcomic-auto
 ```
 
-### Docker 部署
+### Docker Compose（推荐）
+
+1. 准备配置文件
+
+```bash
+cp config.example.yaml config.yaml
+# 编辑 config.yaml，填入账号信息
+```
+
+2. 启动服务
+
+```bash
+docker-compose up -d
+```
+
+3. 查看日志
+
+```bash
+docker-compose logs -f
+```
+
+4. 停止服务
+
+```bash
+docker-compose down
+```
+
+### Docker 手动部署
 
 1. 构建镜像
 
@@ -66,28 +94,6 @@ docker run -d \
   -v $(pwd)/config.yaml:/app/config.yaml \
   -v $(pwd)/logs:/app/logs \
   jmcomic-auto
-```
-
-### Docker Compose
-
-创建 `docker-compose.yml`：
-
-```yaml
-version: '3'
-services:
-  jmcomic-auto:
-    build: .
-    container_name: jmcomic-auto
-    volumes:
-      - ./config.yaml:/app/config.yaml
-      - ./logs:/app/logs
-    restart: unless-stopped
-```
-
-运行：
-
-```bash
-docker-compose up -d
 ```
 
 ## 配置说明
@@ -180,4 +186,14 @@ go build -o jmcomic-auto cmd/jmcomic-auto/main.go
 
 ## License
 
-MIT
+GPL-3.0
+
+本项目采用 GNU General Public License v3.0 开源协议。
+
+这意味着：
+- 你可以自由使用、修改和分发本项目
+- 如果你修改或基于本项目创建衍生作品，必须同样使用 GPL-3.0 协议开源
+- 必须保留原作者的版权声明和许可证声明
+- 不提供任何担保
+
+详见 [LICENSE](LICENSE) 文件。
