@@ -34,7 +34,9 @@ type Client struct {
 	baseURL    string
 	timeout    time.Duration
 	cookies    []*http.Cookie
-	cookieFile string // Cookie 持久化文件路径
+	cookieFile string
+	userID     string
+	username   string
 }
 
 type Response struct {
@@ -51,6 +53,13 @@ type CookieData struct {
 	Domain  string    `json:"domain"`
 	Expires time.Time `json:"expires"`
 	MaxAge  int       `json:"max_age"`
+}
+
+// SessionData 会话持久化数据结构（包含 cookies 和用户信息）
+type SessionData struct {
+	Cookies  []CookieData `json:"cookies"`
+	UserID   string       `json:"user_id,omitempty"`
+	Username string       `json:"username,omitempty"`
 }
 
 func New(baseURL string, timeout time.Duration) (*Client, error) {
@@ -290,13 +299,20 @@ func (c *Client) SaveCookies() error {
 		})
 	}
 
-	data, err := json.MarshalIndent(cookieData, "", "  ")
+	// 保存会话数据（包含 cookies 和用户信息）
+	sessionData := SessionData{
+		Cookies:  cookieData,
+		UserID:   c.userID,
+		Username: c.username,
+	}
+
+	data, err := json.MarshalIndent(sessionData, "", "  ")
 	if err != nil {
-		return fmt.Errorf("序列化 cookies 失败: %w", err)
+		return fmt.Errorf("序列化会话数据失败: %w", err)
 	}
 
 	if err := os.WriteFile(c.cookieFile, data, 0600); err != nil {
-		return fmt.Errorf("写入 cookies 文件失败: %w", err)
+		return fmt.Errorf("写入会话文件失败: %w", err)
 	}
 
 	return nil
@@ -309,12 +325,45 @@ func (c *Client) LoadCookies() error {
 		if os.IsNotExist(err) {
 			return nil // 文件不存在不算错误
 		}
-		return fmt.Errorf("读取 cookies 文件失败: %w", err)
+		return fmt.Errorf("读取会话文件失败: %w", err)
 	}
 
+	// 尝试解析为新格式（SessionData）
+	var sessionData SessionData
+	if err := json.Unmarshal(data, &sessionData); err == nil && len(sessionData.Cookies) > 0 {
+		// 新格式
+		now := time.Now()
+		validCookies := make([]*http.Cookie, 0)
+		for _, cd := range sessionData.Cookies {
+			// 检查是否过期
+			if !cd.Expires.IsZero() && cd.Expires.Before(now) {
+				continue
+			}
+
+			validCookies = append(validCookies, &http.Cookie{
+				Name:    cd.Name,
+				Value:   cd.Value,
+				Path:    cd.Path,
+				Domain:  cd.Domain,
+				Expires: cd.Expires,
+				MaxAge:  cd.MaxAge,
+			})
+		}
+
+		if len(validCookies) > 0 {
+			c.cookies = validCookies
+			c.userID = sessionData.UserID
+			c.username = sessionData.Username
+			logger.Info("加载会话成功", "count", len(validCookies), "user_id", c.userID)
+		}
+
+		return nil
+	}
+
+	// 尝试解析为旧格式（[]CookieData）以保持向后兼容
 	var cookieData []CookieData
 	if err := json.Unmarshal(data, &cookieData); err != nil {
-		return fmt.Errorf("解析 cookies 文件失败: %w", err)
+		return fmt.Errorf("解析会话文件失败: %w", err)
 	}
 
 	// 转换回 http.Cookie 并过滤过期的
@@ -338,7 +387,7 @@ func (c *Client) LoadCookies() error {
 
 	if len(validCookies) > 0 {
 		c.cookies = validCookies
-		logger.Info("加载 cookies 成功", "count", len(validCookies))
+		logger.Info("加载 cookies 成功（旧格式）", "count", len(validCookies))
 	}
 
 	return nil
@@ -356,4 +405,24 @@ func (c *Client) HasValidCookies() bool {
 		}
 	}
 	return false
+}
+
+// SetUserInfo 设置用户信息（用于缓存）
+func (c *Client) SetUserInfo(userID, username string) {
+	c.userID = userID
+	c.username = username
+	// 自动保存会话信息
+	if err := c.SaveCookies(); err != nil {
+		logger.Warn("保存会话信息失败", "error", err)
+	}
+}
+
+// GetUserID 获取缓存的用户 ID
+func (c *Client) GetUserID() string {
+	return c.userID
+}
+
+// GetUsername 获取缓存的用户名
+func (c *Client) GetUsername() string {
+	return c.username
 }

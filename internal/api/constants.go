@@ -4,7 +4,7 @@ package api
 
 const (
 	// APP 版本
-	AppVersion = "2.0.16"
+	AppVersion = "2.0.13"
 
 	// 默认域名（会自动更新）
 	DefaultBaseURL = "https://www.cdnaspa.vip"

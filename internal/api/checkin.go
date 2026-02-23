@@ -23,6 +23,11 @@ func NewCheckInAPI(c *client.Client, userID string) *CheckInAPI {
 }
 
 func (a *CheckInAPI) GetDailyList(ctx context.Context) (*DailyListData, error) {
+	// 验证 userID 不为空
+	if a.userID == "" {
+		return nil, fmt.Errorf("用户ID为空，无法执行签到操作")
+	}
+
 	ts := time.Now().Unix()
 
 	formData := map[string]string{
@@ -105,9 +110,22 @@ func (a *CheckInAPI) DailyCheckIn(ctx context.Context, dailyID string) (*DailyCh
 }
 
 func (a *CheckInAPI) PerformCheckIn(ctx context.Context) error {
-	dailyList, err := a.GetDailyList(ctx)
-	if err != nil {
-		return fmt.Errorf("获取任务列表失败: %w", err)
+	const maxRetries = 3
+	var dailyList *DailyListData
+	var err error
+
+	for retryCount := 1; retryCount <= maxRetries; retryCount++ {
+		dailyList, err = a.GetDailyList(ctx)
+		if err == nil {
+			break
+		}
+
+		logger.Error("获取任务列表失败", "retry", retryCount, "max_retries", maxRetries, "error", err)
+		if retryCount < maxRetries {
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		return fmt.Errorf("获取任务列表失败（已重试%d次）: %w", maxRetries, err)
 	}
 
 	if len(dailyList.List) == 0 {
@@ -115,17 +133,29 @@ func (a *CheckInAPI) PerformCheckIn(ctx context.Context) error {
 		return nil
 	}
 
-	// 取最后一个任务（参考 Breeze 实现）
 	lastTask := dailyList.List[len(dailyList.List)-1]
-	logger.Info("准备签到", "task_id", lastTask.ID, "year", lastTask.Year, "month", lastTask.Month)
 
-	result, err := a.DailyCheckIn(ctx, lastTask.ID)
-	if err != nil {
-		return fmt.Errorf("签到失败: %w", err)
+	if lastTask.ID == "" {
+		return fmt.Errorf("任务ID为空，无法执行签到")
 	}
 
-	if !result.Success {
-		return fmt.Errorf("签到未成功: %s", result.Message)
+	logger.Info("准备签到", "task_id", lastTask.ID, "year", lastTask.Year, "month", lastTask.Month)
+
+	for retryCount := 1; retryCount <= maxRetries; retryCount++ {
+		result, err := a.DailyCheckIn(ctx, lastTask.ID)
+		if err == nil {
+			if !result.Success {
+				return fmt.Errorf("签到未成功: %s", result.Message)
+			}
+			return nil
+		}
+
+		logger.Error("签到失败", "retry", retryCount, "max_retries", maxRetries, "error", err)
+		if retryCount < maxRetries {
+			time.Sleep(1 * time.Second)
+			continue
+		}
+		return fmt.Errorf("签到失败（已重试%d次）: %w", maxRetries, err)
 	}
 
 	return nil

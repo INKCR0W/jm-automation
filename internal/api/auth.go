@@ -27,43 +27,43 @@ func (a *AuthAPI) Login(ctx context.Context, username, password string) (*LoginD
 	if a.client.HasValidCookies() {
 		logger.Info("检测到有效的登录状态，尝试使用已保存的 cookies")
 
-		// 尝试调用一个需要登录的接口来验证登录状态
-		// 使用获取收藏夹接口作为验证（轻量级接口）
-		ts := time.Now().Unix()
-		resp, err := a.client.GetWithToken(ctx, "/favorite?page=1&folder_id=0&o=mr", ts, AppVersion)
-		if err == nil && resp.StatusCode == 200 {
-			// 尝试解密响应，如果成功说明登录状态有效
-			plaintext, err := a.client.DecryptResponse(resp, ts)
-			if err == nil {
-				logger.Info("使用已保存的登录状态成功")
+		// 从 client 获取缓存的用户信息
+		cachedUserID := a.client.GetUserID()
+		cachedUsername := a.client.GetUsername()
 
-				// 从 cookies 中提取 AVS
-				for _, cookie := range a.client.GetCookies() {
-					if cookie.Name == "AVS" {
-						a.avs = cookie.Value
-						break
+		// 只有在有完整的用户信息时才尝试使用缓存
+		if cachedUserID != "" && cachedUsername != "" {
+			// 尝试调用一个需要登录的接口来验证登录状态
+			// 使用获取收藏夹接口作为验证（轻量级接口）
+			ts := time.Now().Unix()
+			resp, err := a.client.GetWithToken(ctx, "/favorite?page=1&folder_id=0&o=mr", ts, AppVersion)
+			if err == nil && resp.StatusCode == 200 {
+				// 尝试解密响应，如果成功说明登录状态有效
+				_, err := a.client.DecryptResponse(resp, ts)
+				if err == nil {
+					// 从 cookies 中提取 AVS
+					for _, cookie := range a.client.GetCookies() {
+						if cookie.Name == "AVS" {
+							a.avs = cookie.Value
+							break
+						}
 					}
-				}
 
-				// 尝试从收藏夹响应中提取用户信息
-				var favoriteData map[string]interface{}
-				if err := json.Unmarshal([]byte(plaintext), &favoriteData); err == nil {
-					// 从收藏夹数据中提取用户ID（如果有的话）
-					if list, ok := favoriteData["list"].([]interface{}); ok && len(list) > 0 {
-						// 收藏夹有数据，说明登录有效
-						a.userID = "cached_user"
-					}
-				}
+					// 使用缓存的用户信息
+					a.userID = cachedUserID
+					logger.Info("使用已保存的登录状态成功", "uid", cachedUserID, "username", cachedUsername)
 
-				// 返回一个简单的登录数据
-				return &LoginData{
-					UID:      "cached",
-					Username: username,
-				}, nil
+					return &LoginData{
+						UID:      cachedUserID,
+						Username: cachedUsername,
+					}, nil
+				}
 			}
-		}
 
-		logger.Info("已保存的登录状态无效，重新登录")
+			logger.Info("已保存的登录状态无效，重新登录")
+		} else {
+			logger.Info("缺少缓存的用户信息，重新登录")
+		}
 	}
 
 	ts := time.Now().Unix()
@@ -93,6 +93,13 @@ func (a *AuthAPI) Login(ctx context.Context, username, password string) (*LoginD
 		return nil, fmt.Errorf("解析登录数据失败: %w", err)
 	}
 
+	if loginData.UID == "" {
+		return nil, fmt.Errorf("登录响应中缺少用户ID")
+	}
+	if loginData.Username == "" {
+		return nil, fmt.Errorf("登录响应中缺少用户名")
+	}
+
 	a.avs = loginData.S
 	a.userID = loginData.UID
 
@@ -104,6 +111,8 @@ func (a *AuthAPI) Login(ctx context.Context, username, password string) (*LoginD
 	allCookies := a.client.GetCookies()
 	allCookies = append(allCookies, cookie)
 	a.client.SetCookies(allCookies)
+
+	a.client.SetUserInfo(loginData.UID, loginData.Username)
 
 	logger.Info("登录成功", "uid", loginData.UID, "username", loginData.Username, "level", loginData.Level, "cookies", len(allCookies))
 

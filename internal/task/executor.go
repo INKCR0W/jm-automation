@@ -23,19 +23,29 @@ func NewExecutor(c *client.Client) *Executor {
 func (e *Executor) Execute(ctx context.Context, account config.Account) error {
 	logger.Info("开始执行任务", "username", account.Username)
 
-	// 1. 登录
+	const maxLoginRetries = 3
+	var loginData *api.LoginData
+	var err error
+
 	authAPI := api.NewAuthAPI(e.client)
-	loginData, err := authAPI.Login(ctx, account.Username, account.Password)
-	if err != nil {
-		return fmt.Errorf("登录失败: %w", err)
+	for retryCount := 1; retryCount <= maxLoginRetries; retryCount++ {
+		loginData, err = authAPI.Login(ctx, account.Username, account.Password)
+		if err == nil {
+			break
+		}
+
+		logger.Error("登录失败", "retry", retryCount, "max_retries", maxLoginRetries, "error", err)
+		if retryCount < maxLoginRetries {
+			time.Sleep(1 * time.Second)
+			continue
+		}
+		return fmt.Errorf("登录失败（已重试%d次）: %w", maxLoginRetries, err)
 	}
 
 	logger.Info("登录成功", "username", account.Username, "uid", loginData.UID, "level", loginData.Level)
 
-	// 随机延迟，模拟人工操作
 	utils.RandomDelay(1*time.Second, 3*time.Second)
 
-	// 执行签到
 	checkInAPI := api.NewCheckInAPI(e.client, authAPI.GetUserID())
 	if err := checkInAPI.PerformCheckIn(ctx); err != nil {
 		logger.Error("签到失败", "error", err)
