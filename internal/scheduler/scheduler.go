@@ -14,10 +14,12 @@ import (
 )
 
 type Scheduler struct {
-	cron     *cron.Cron
-	executor *task.Executor
-	config   *config.Config
-	client   *client.Client
+	cron      *cron.Cron
+	executor  *task.Executor
+	config    *config.Config
+	client    *client.Client
+	clientMap map[string]*client.Client
+	mu        sync.Mutex
 }
 
 func New(cfg *config.Config) (*Scheduler, error) {
@@ -37,10 +39,11 @@ func New(cfg *config.Config) (*Scheduler, error) {
 	cronInstance := cron.New(cron.WithSeconds(), cron.WithLocation(loc))
 
 	return &Scheduler{
-		cron:     cronInstance,
-		executor: task.NewExecutor(c),
-		config:   cfg,
-		client:   c,
+		cron:      cronInstance,
+		executor:  task.NewExecutor(c),
+		config:    cfg,
+		client:    c,
+		clientMap: make(map[string]*client.Client),
 	}, nil
 }
 
@@ -102,10 +105,9 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 		go func(acc config.Account) {
 			defer wg.Done()
 
-			// 每个账号使用独立的客户端实例
-			c, err := client.New(s.config.Server.BaseURL, s.config.Server.GetTimeout())
+			c, err := s.getOrCreateClient(acc.Username)
 			if err != nil {
-				logger.Error("创建客户端失败", "username", acc.Username, "error", err)
+				logger.Error("获取客户端失败", "username", acc.Username, "error", err)
 				errCh <- err
 				return
 			}
@@ -132,4 +134,23 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+func (s *Scheduler) getOrCreateClient(username string) (*client.Client, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if c, exists := s.clientMap[username]; exists {
+		return c, nil
+	}
+
+	c, err := client.New(s.config.Server.BaseURL, s.config.Server.GetTimeout())
+	if err != nil {
+		return nil, fmt.Errorf("创建客户端失败: %w", err)
+	}
+
+	s.clientMap[username] = c
+	logger.Info("为账号创建新的客户端实例", "username", username)
+
+	return c, nil
 }
