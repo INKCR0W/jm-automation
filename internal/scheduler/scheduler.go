@@ -52,7 +52,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	// 添加定时任务
 	_, err := s.cron.AddFunc(s.config.Scheduler.Cron, func() {
 		// 添加随机延迟
-		if s.config.Scheduler.RandomDelay > 0 {
+		if s.config.Scheduler.RandomDelay != nil && *s.config.Scheduler.RandomDelay > 0 {
 			delay := s.getRandomDelay()
 			logger.Info("添加随机延迟", "delay", delay)
 			time.Sleep(delay)
@@ -76,7 +76,11 @@ func (s *Scheduler) Start(ctx context.Context) error {
 
 // getRandomDelay 获取随机延迟时间
 func (s *Scheduler) getRandomDelay() time.Duration {
-	maxMinutes := s.config.Scheduler.RandomDelay
+	if s.config.Scheduler.RandomDelay == nil {
+		return 0
+	}
+
+	maxMinutes := *s.config.Scheduler.RandomDelay
 	if maxMinutes <= 0 {
 		return 0
 	}
