@@ -174,8 +174,19 @@ func (c *Client) doRequestRaw(ctx context.Context, method, path, body string, he
 	}
 
 	// 设置默认 headers（与 Chrome 144 TLS Profile 匹配）
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36")
-	req.Header.Set("Accept", "application/json, text/plain, */*")
+	// 使用 Chrome 浏览器的标准 header 顺序
+	req.Header = http.Header{
+		"accept":          {"application/json, text/plain, */*"},
+		"accept-encoding": {"gzip, deflate, br"},
+		"accept-language": {"zh-CN,zh;q=0.9,en;q=0.8"},
+		"user-agent":      {"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"},
+		http.HeaderOrderKey: {
+			"accept",
+			"accept-encoding",
+			"accept-language",
+			"user-agent",
+		},
+	}
 
 	// 自定义 headers
 	for k, v := range headers {
@@ -228,8 +239,19 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	}
 
 	// 设置默认 headers（与 Chrome 144 TLS Profile 匹配）
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36")
-	req.Header.Set("Accept", "application/json, text/plain, */*")
+	// 使用 Chrome 浏览器的标准 header 顺序
+	req.Header = http.Header{
+		"accept":          {"application/json, text/plain, */*"},
+		"accept-encoding": {"gzip, deflate, br"},
+		"accept-language": {"zh-CN,zh;q=0.9,en;q=0.8"},
+		"user-agent":      {"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"},
+		http.HeaderOrderKey: {
+			"accept",
+			"accept-encoding",
+			"accept-language",
+			"user-agent",
+		},
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
