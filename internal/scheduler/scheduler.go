@@ -10,6 +10,7 @@ import (
 	"github.com/INKCR0W/jm-automation/internal/config"
 	"github.com/INKCR0W/jm-automation/internal/task"
 	"github.com/INKCR0W/jm-automation/pkg/logger"
+	"github.com/INKCR0W/jm-automation/pkg/utils"
 	"github.com/robfig/cron/v3"
 )
 
@@ -80,8 +81,8 @@ func (s *Scheduler) getRandomDelay() time.Duration {
 		return 0
 	}
 
-	// 生成 0 到 maxMinutes 之间的随机分钟数
-	randomMinutes := time.Now().UnixNano() % int64(maxMinutes)
+	// 使用 utils.RandomInt 生成真正的随机分钟数（0 到 maxMinutes 之间）
+	randomMinutes := utils.RandomInt(0, maxMinutes+1)
 	return time.Duration(randomMinutes) * time.Minute
 }
 
