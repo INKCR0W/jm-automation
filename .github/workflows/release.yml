@@ -1,0 +1,143 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-binaries:
+    name: Build Binaries
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Get version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          BINARY_NAME="jmcomic-auto-${{ matrix.goos }}-${{ matrix.goarch }}"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BINARY_NAME="${BINARY_NAME}.exe"
+          fi
+          
+          go build -v \
+            -ldflags="-s -w -X main.version=${{ steps.version.outputs.VERSION }} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o "${BINARY_NAME}" \
+            cmd/jmcomic-auto/main.go
+          
+          # 创建压缩包
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip "${BINARY_NAME%.exe}.zip" "${BINARY_NAME}" config.example.yaml README.md LICENSE
+          else
+            tar czf "${BINARY_NAME}.tar.gz" "${BINARY_NAME}" config.example.yaml README.md LICENSE
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jmcomic-auto-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            *.tar.gz
+            *.zip
+
+  create-release:
+    name: Create Release
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Get version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # 获取上一个 tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          
+          if [ -z "$PREV_TAG" ]; then
+            # 如果没有上一个 tag，获取所有提交
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges)
+          else
+            # 获取两个 tag 之间的提交
+            CHANGELOG=$(git log ${PREV_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          fi
+          
+          # 保存到文件
+          echo "$CHANGELOG" > CHANGELOG.txt
+          
+          # 输出到 GitHub Output
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release ${{ steps.version.outputs.VERSION }}
+          body: |
+            ## 更新内容
+            
+            ${{ steps.changelog.outputs.changelog }}
+            
+            ## 下载说明
+            
+            请根据您的操作系统下载对应的文件：
+            
+            - **Linux (x64)**: `jmcomic-auto-linux-amd64.tar.gz`
+            - **Linux (ARM64)**: `jmcomic-auto-linux-arm64.tar.gz`
+            - **Windows (x64)**: `jmcomic-auto-windows-amd64.zip`
+            - **macOS (Intel)**: `jmcomic-auto-darwin-amd64.tar.gz`
+            - **macOS (Apple Silicon)**: `jmcomic-auto-darwin-arm64.tar.gz`
+            
+            ## 使用方法
+            
+            1. 下载并解压对应平台的文件
+            2. 复制 `config.example.yaml` 为 `config.yaml` 并配置账号信息
+            3. 运行程序：
+               - Linux/macOS: `./jmcomic-auto`
+               - Windows: `jmcomic-auto.exe`
+            
+            详细文档请查看 [README.md](https://github.com/${{ github.repository }}/blob/main/README.md)
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+          draft: false
+          prerelease: false

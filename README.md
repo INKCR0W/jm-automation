@@ -1,5 +1,11 @@
 # JM Comic Auto
 
+[![CI](https://github.com/INKCR0W/jm-automation/actions/workflows/ci.yml/badge.svg)](https://github.com/INKCR0W/jm-automation/actions/workflows/ci.yml)
+[![Release](https://github.com/INKCR0W/jm-automation/actions/workflows/release.yml/badge.svg)](https://github.com/INKCR0W/jm-automation/actions/workflows/release.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/INKCR0W/jm-automation)](https://goreportcard.com/report/github.com/INKCR0W/jm-automation)
+[![License](https://img.shields.io/github/license/INKCR0W/jm-automation)](LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/INKCR0W/jm-automation)](https://github.com/INKCR0W/jm-automation/releases)
+
 禁漫天堂自动签到工具，支持多账号管理和定时任务。
 
 ## 功能
