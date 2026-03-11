@@ -34,9 +34,6 @@ WORKDIR /app
 # 从构建阶段复制二进制文件
 COPY --from=builder /app/jmcomic-auto .
 
-# 创建必要的目录
-RUN mkdir -p logs data/cookies
-
 # 添加非 root 用户
 RUN addgroup -g 1000 appuser && \
     adduser -D -u 1000 -G appuser appuser && \
@@ -44,6 +41,9 @@ RUN addgroup -g 1000 appuser && \
 
 # 切换到非 root 用户
 USER appuser
+
+# 创建必要的目录
+RUN mkdir -p logs data/cookies
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
