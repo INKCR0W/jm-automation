@@ -37,16 +37,16 @@ COPY --from=builder /app/jmcomic-auto .
 # 创建启动脚本
 RUN echo '#!/bin/sh' > /app/entrypoint.sh && \
     echo 'mkdir -p /app/logs /app/data/cookies' >> /app/entrypoint.sh && \
-    echo 'exec ./jmcomic-auto "$@"' >> /app/entrypoint.sh && \
+    echo 'chown -R appuser:appuser /app/logs /app/data' >> /app/entrypoint.sh && \
+    echo 'exec su-exec appuser ./jmcomic-auto "$@"' >> /app/entrypoint.sh && \
     chmod +x /app/entrypoint.sh
+
+RUN apk add --no-cache su-exec
 
 # 添加非 root 用户
 RUN addgroup -g 1000 appuser && \
     adduser -D -u 1000 -G appuser appuser && \
     chown -R appuser:appuser /app
-
-# 切换到非 root 用户
-USER appuser
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
