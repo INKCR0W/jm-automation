@@ -36,7 +36,9 @@ func (e *Executor) Execute(ctx context.Context, account config.Account) error {
 
 		logger.Error("登录失败", "retry", retryCount, "max_retries", maxLoginRetries, "error", err)
 		if retryCount < maxLoginRetries {
-			time.Sleep(1 * time.Second)
+			backoff := time.Duration(1<<(retryCount-1)) * time.Second
+			logger.Info("等待重试", "backoff", backoff)
+			time.Sleep(backoff)
 			continue
 		}
 		return fmt.Errorf("登录失败（已重试%d次）: %w", maxLoginRetries, err)

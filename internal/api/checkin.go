@@ -123,7 +123,9 @@ func (a *CheckInAPI) PerformCheckIn(ctx context.Context) error {
 
 		logger.Error("获取任务列表失败", "retry", retryCount, "max_retries", maxRetries, "error", err)
 		if retryCount < maxRetries {
-			time.Sleep(5 * time.Second)
+			backoff := time.Duration(5<<(retryCount-1)) * time.Second
+			logger.Info("等待重试", "backoff", backoff)
+			time.Sleep(backoff)
 			continue
 		}
 		return fmt.Errorf("获取任务列表失败（已重试%d次）: %w", maxRetries, err)
@@ -155,7 +157,9 @@ func (a *CheckInAPI) PerformCheckIn(ctx context.Context) error {
 
 		logger.Error("签到失败", "retry", retryCount, "max_retries", maxRetries, "error", err)
 		if retryCount < maxRetries {
-			time.Sleep(1 * time.Second)
+			backoff := time.Duration(1<<(retryCount-1)) * time.Second
+			logger.Info("等待重试", "backoff", backoff)
+			time.Sleep(backoff)
 			continue
 		}
 		return fmt.Errorf("签到失败（已重试%d次）: %w", maxRetries, err)

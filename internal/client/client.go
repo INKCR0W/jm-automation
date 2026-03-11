@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/INKCR0W/jm-automation/pkg/crypto"
@@ -34,6 +35,7 @@ type Client struct {
 	baseURL    string
 	timeout    time.Duration
 	cookies    []*http.Cookie
+	cookieMu   sync.RWMutex // 保护 cookies 的并发访问
 	cookieFile string
 	userID     string
 	username   string
@@ -290,6 +292,9 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 }
 
 func (c *Client) SetCookies(cookies []*http.Cookie) {
+	c.cookieMu.Lock()
+	defer c.cookieMu.Unlock()
+
 	c.cookies = cookies
 	// 自动保存 cookies
 	if err := c.SaveCookies(); err != nil {
@@ -298,6 +303,9 @@ func (c *Client) SetCookies(cookies []*http.Cookie) {
 }
 
 func (c *Client) GetCookies() []*http.Cookie {
+	c.cookieMu.RLock()
+	defer c.cookieMu.RUnlock()
+
 	return c.cookies
 }
 

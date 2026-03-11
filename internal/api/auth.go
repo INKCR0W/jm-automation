@@ -114,7 +114,7 @@ func (a *AuthAPI) Login(ctx context.Context, username, password string) (*LoginD
 
 	a.client.SetUserInfo(loginData.UID, loginData.Username)
 
-	logger.Info("登录成功", "uid", loginData.UID, "username", loginData.Username, "level", loginData.Level, "cookies", len(allCookies))
+	logger.Info("登录成功", "uid", loginData.UID, "username", loginData.Username, "level", loginData.Level)
 
 	return &loginData, nil
 }
