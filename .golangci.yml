@@ -1,0 +1,86 @@
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  enable:
+    - errcheck      # 检查未处理的错误
+    - gosimple      # 简化代码
+    - govet         # 检查可疑的构造
+    - ineffassign   # 检查无效的赋值
+    - staticcheck   # 静态分析
+    - unused        # 检查未使用的代码
+    - gofmt         # 检查代码格式
+    - goimports     # 检查 import 顺序
+    - misspell      # 检查拼写错误
+    - gosec         # 安全检查
+    - bodyclose     # 检查 HTTP body 是否关闭
+    - noctx         # 检查是否传递了 context
+    - gocritic      # 代码质量检查
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+    exclude-functions:
+      - (*go.uber.org/zap.Logger).Sync  # zap logger sync 错误可以忽略
+
+  govet:
+    enable:
+      - shadow
+    disable:
+      - fieldalignment  # 字段对齐优化不是必须的
+
+  gofmt:
+    simplify: true
+
+  gosec:
+    excludes:
+      - G104  # 允许某些错误不检查（如 defer 中的错误）
+      - G304  # 允许文件路径来自变量
+      - G401  # MD5 用于非加密场景（API 签名）
+      - G501  # MD5 导入用于非加密场景
+      - G101  # 这些不是真正的凭据，是 API 密钥
+      - G404  # math/rand/v2 在 Go 1.22+ 是安全的
+
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - style
+      - performance
+    disabled-checks:
+      - commentFormatting
+      - commentedOutCode
+      - octalLiteral
+      - builtinShadow
+      - paramTypeCombine
+      - unnamedResult
+
+issues:
+  exclude-rules:
+    # 排除测试文件的某些检查
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gosec
+
+    # 排除 main.go 中的 os.Exit
+    - path: cmd/jmcomic-auto/main\.go
+      linters:
+        - gocritic
+      text: "exitAfterDefer"
+
+    # 排除 crypto 包的安全警告（MD5 用于 API 签名，不是密码学）
+    - path: pkg/crypto/crypto\.go
+      linters:
+        - gosec
+
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+output:
+  formats:
+    - format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true

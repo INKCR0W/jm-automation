@@ -79,6 +79,7 @@ func Init(cfg config.LogConfig) error {
 
 func Sync() {
 	if log != nil {
+		// 忽略 Sync 错误，因为在某些平台上可能会失败
 		_ = log.Sync()
 	}
 }

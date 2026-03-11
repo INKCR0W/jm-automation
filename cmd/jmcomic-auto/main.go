@@ -39,8 +39,8 @@ func main() {
 	}
 
 	// 初始化日志
-	if err := logger.Init(cfg.Log); err != nil {
-		fmt.Fprintf(os.Stderr, "初始化日志失败: %v\n", err)
+	if logErr := logger.Init(cfg.Log); logErr != nil {
+		fmt.Fprintf(os.Stderr, "初始化日志失败: %v\n", logErr)
 		os.Exit(1)
 	}
 	defer logger.Sync()
