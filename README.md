@@ -18,6 +18,14 @@
 
 ## 快速开始
 
+### 下载
+
+#### 稳定版本（推荐）
+访问 [Releases](https://github.com/INKCR0W/jm-automation/releases) 页面下载最新的稳定版本。
+
+#### 开发版本
+如果你想体验最新功能，可以下载 [Pre-release](https://github.com/INKCR0W/jm-automation/releases/tag/pre-release) 版本（每次代码更新后自动构建）。
+
 ### 本地运行
 
 1. 克隆项目
