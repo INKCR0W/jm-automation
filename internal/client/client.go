@@ -204,7 +204,7 @@ func (c *Client) doRequestRaw(ctx context.Context, method, path, body string, he
 	if err != nil {
 		return nil, fmt.Errorf("请求失败: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// 保存 cookies
 	if cookies := resp.Cookies(); len(cookies) > 0 {
@@ -272,7 +272,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	if err != nil {
 		return nil, fmt.Errorf("请求失败: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// 保存 cookies
 	if cookies := resp.Cookies(); len(cookies) > 0 {
