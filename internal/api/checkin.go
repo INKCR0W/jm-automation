@@ -8,6 +8,7 @@ import (
 
 	"github.com/INKCR0W/jm-automation/internal/client"
 	"github.com/INKCR0W/jm-automation/pkg/logger"
+	"github.com/INKCR0W/jm-automation/pkg/utils"
 )
 
 type CheckInAPI struct {
@@ -140,6 +141,8 @@ func (a *CheckInAPI) PerformCheckIn(ctx context.Context) error {
 	}
 
 	logger.Info("准备签到", "task_id", lastTask.ID, "year", lastTask.Year, "month", lastTask.Month)
+
+	utils.RandomDelay(500*time.Millisecond, 3*time.Second)
 
 	for retryCount := 1; retryCount <= maxRetries; retryCount++ {
 		result, err := a.DailyCheckIn(ctx, lastTask.ID)
