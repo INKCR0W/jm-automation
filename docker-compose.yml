@@ -4,7 +4,6 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: jmcomic-auto
-    user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./logs:/app/logs
