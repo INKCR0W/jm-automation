@@ -64,7 +64,7 @@ type SessionData struct {
 	Username string       `json:"username,omitempty"`
 }
 
-func New(baseURL string, timeout time.Duration) (*Client, error) {
+func New(baseURL string, timeout time.Duration, username string) (*Client, error) {
 	options := []tls_client.HttpClientOption{
 		tls_client.WithTimeoutSeconds(int(timeout.Seconds())),
 		tls_client.WithClientProfile(profiles.Chrome_144),
@@ -75,22 +75,25 @@ func New(baseURL string, timeout time.Duration) (*Client, error) {
 		return nil, fmt.Errorf("创建 HTTP 客户端失败: %w", err)
 	}
 
-	// 创建 cookies 目录
 	cookieDir := "data/cookies"
 	if err := os.MkdirAll(cookieDir, 0755); err != nil {
 		logger.Warn("创建 cookies 目录失败", "error", err)
+	}
+
+	cookieFileName := "cookies.json"
+	if username != "" {
+		cookieFileName = username + "_session.json"
 	}
 
 	client := &Client{
 		httpClient: httpClient,
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		timeout:    timeout,
-		cookieFile: filepath.Join(cookieDir, "cookies.json"),
+		cookieFile: filepath.Join(cookieDir, cookieFileName),
 	}
 
-	// 尝试加载已保存的 cookies
 	if err := client.LoadCookies(); err != nil {
-		logger.Debug("加载 cookies 失败", "error", err)
+		logger.Debug("加载 cookies 失败", "username", username, "error", err)
 	}
 
 	return client, nil

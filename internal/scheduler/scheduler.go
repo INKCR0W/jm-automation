@@ -16,20 +16,12 @@ import (
 
 type Scheduler struct {
 	cron      *cron.Cron
-	executor  *task.Executor
 	config    *config.Config
-	client    *client.Client
 	clientMap map[string]*client.Client
 	mu        sync.Mutex
 }
 
 func New(cfg *config.Config) (*Scheduler, error) {
-	// 创建 HTTP 客户端
-	c, err := client.New(cfg.Server.BaseURL, cfg.Server.GetTimeout())
-	if err != nil {
-		return nil, fmt.Errorf("创建客户端失败: %w", err)
-	}
-
 	// 加载时区
 	loc, err := cfg.Scheduler.GetLocation()
 	if err != nil {
@@ -41,9 +33,7 @@ func New(cfg *config.Config) (*Scheduler, error) {
 
 	return &Scheduler{
 		cron:      cronInstance,
-		executor:  task.NewExecutor(c),
 		config:    cfg,
-		client:    c,
 		clientMap: make(map[string]*client.Client),
 	}, nil
 }
@@ -149,7 +139,7 @@ func (s *Scheduler) getOrCreateClient(username string) (*client.Client, error) {
 		return c, nil
 	}
 
-	c, err := client.New(s.config.Server.BaseURL, s.config.Server.GetTimeout())
+	c, err := client.New(s.config.Server.BaseURL, s.config.Server.GetTimeout(), username)
 	if err != nil {
 		return nil, fmt.Errorf("创建客户端失败: %w", err)
 	}
