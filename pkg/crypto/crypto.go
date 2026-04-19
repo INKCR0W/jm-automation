@@ -25,18 +25,13 @@ func MD5Hex(s string) string {
 // TokenAndTokenParam 计算请求头的 token 和 tokenparam
 // ts: 时间戳（秒）
 // version: APP 版本号
-// secret: 密钥（可选，默认使用 AppTokenSecret）
+// secret: 密钥（已废弃，保留参数兼容性）
 func TokenAndTokenParam(ts int64, version string, secret ...string) (string, string) {
-	sec := AppTokenSecret
-	if len(secret) > 0 {
-		sec = secret[0]
-	}
-
-	// tokenparam: "1700566805,2.0.16"
+	// tokenparam: "1700566805,2.0.13"
 	tokenparam := fmt.Sprintf("%d,%s", ts, version)
 
-	// token: md5(ts + secret)
-	token := MD5Hex(fmt.Sprintf("%d%s", ts, sec))
+	// token: md5(ts + version)，与禁漫最新 API 规范保持一致
+	token := MD5Hex(fmt.Sprintf("%d%s", ts, version))
 
 	return token, tokenparam
 }
