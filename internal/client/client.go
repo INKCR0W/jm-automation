@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,12 +34,14 @@ type EncryptedResponse struct {
 type Client struct {
 	httpClient tls_client.HttpClient
 	baseURL    string
+	baseURLs   []string
 	timeout    time.Duration
 	cookies    []*http.Cookie
 	cookieMu   sync.RWMutex // 保护 cookies 的并发访问
 	cookieFile string
 	userID     string
 	username   string
+	jwtToken   string
 }
 
 type Response struct {
@@ -62,6 +65,7 @@ type SessionData struct {
 	Cookies  []CookieData `json:"cookies"`
 	UserID   string       `json:"user_id,omitempty"`
 	Username string       `json:"username,omitempty"`
+	JWTToken string       `json:"jwt_token,omitempty"`
 }
 
 func New(baseURL string, timeout time.Duration, username string) (*Client, error) {
@@ -99,6 +103,23 @@ func New(baseURL string, timeout time.Duration, username string) (*Client, error
 	return client, nil
 }
 
+func (c *Client) SetBaseURLs(baseURLs []string) {
+	c.baseURLs = make([]string, 0, len(baseURLs))
+	for _, baseURL := range baseURLs {
+		baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+		if baseURL != "" {
+			c.baseURLs = append(c.baseURLs, baseURL)
+		}
+	}
+	if len(c.baseURLs) > 0 {
+		c.baseURL = c.baseURLs[0]
+	}
+}
+
+func (c *Client) BaseURL() string {
+	return c.baseURL
+}
+
 // GetWithToken 发送带 token 的 GET 请求
 func (c *Client) GetWithToken(ctx context.Context, path string, ts int64, appVersion string) (*Response, error) {
 	token, tokenparam := crypto.TokenAndTokenParam(ts, appVersion)
@@ -123,17 +144,22 @@ func (c *Client) PostFormWithToken(ctx context.Context, path string, formData ma
 // PostForm 发送 POST 表单请求
 func (c *Client) PostForm(ctx context.Context, path string, formData map[string]string, headers map[string]string) (*Response, error) {
 	// 构建 form data
-	values := make([]string, 0, len(formData))
+	values := url.Values{}
 	for k, v := range formData {
-		values = append(values, fmt.Sprintf("%s=%s", k, v))
+		values.Set(k, v)
 	}
-	body := strings.Join(values, "&")
+	body := values.Encode()
 
 	return c.doRequestRaw(ctx, http.MethodPost, path, body, headers)
 }
 
 // DecryptResponse 解密 API 响应
 func (c *Client) DecryptResponse(resp *Response, ts int64) (string, error) {
+	bodyText := strings.TrimSpace(string(resp.Body))
+	if strings.HasPrefix(bodyText, "<") {
+		return "", fmt.Errorf("服务器返回 HTML，可能是域名失效或请求特征被拦截 (status=%d, content_type=%s)", resp.StatusCode, resp.Headers.Get("Content-Type"))
+	}
+
 	// 先尝试解析为标准的加密响应
 	var encResp EncryptedResponse
 	if err := json.Unmarshal(resp.Body, &encResp); err != nil {
@@ -154,7 +180,7 @@ func (c *Client) DecryptResponse(resp *Response, ts int64) (string, error) {
 	}
 
 	// 解密数据
-	plaintext, err := crypto.DecodeRespData(encResp.Data, ts)
+	plaintext, err := crypto.DecodeRespDataWithSeeds(encResp.Data, ts, crypto.AppDataSecret, crypto.AppTokenSecret2)
 	if err != nil {
 		return "", fmt.Errorf("解密响应数据失败: %w", err)
 	}
@@ -171,7 +197,32 @@ func (c *Client) Post(ctx context.Context, path string, body interface{}, header
 }
 
 func (c *Client) doRequestRaw(ctx context.Context, method, path, body string, headers map[string]string) (*Response, error) {
-	url := c.baseURL + path
+	baseURLs := c.requestBaseURLs()
+	var lastResp *Response
+	var lastErr error
+
+	for _, baseURL := range baseURLs {
+		resp, err := c.doRequestRawOnce(ctx, method, baseURL, path, body, headers)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if !looksLikeHTML(resp) {
+			c.baseURL = baseURL
+			return resp, nil
+		}
+		lastResp = resp
+		lastErr = fmt.Errorf("服务器返回 HTML (status=%d, base_url=%s)", resp.StatusCode, baseURL)
+	}
+
+	if lastResp != nil {
+		return lastResp, nil
+	}
+	return nil, lastErr
+}
+
+func (c *Client) doRequestRawOnce(ctx context.Context, method, baseURL, path, body string, headers map[string]string) (*Response, error) {
+	url := baseURL + path
 
 	req, err := http.NewRequestWithContext(ctx, method, url, strings.NewReader(body))
 	if err != nil {
@@ -196,6 +247,9 @@ func (c *Client) doRequestRaw(ctx context.Context, method, path, body string, he
 	// 自定义 headers
 	for k, v := range headers {
 		req.Header.Set(k, v)
+	}
+	if c.jwtToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.jwtToken)
 	}
 
 	// 添加 cookies
@@ -227,7 +281,32 @@ func (c *Client) doRequestRaw(ctx context.Context, method, path, body string, he
 }
 
 func (c *Client) doRequest(ctx context.Context, method, path string, body interface{}, headers map[string]string) (*Response, error) {
-	url := c.baseURL + path
+	baseURLs := c.requestBaseURLs()
+	var lastResp *Response
+	var lastErr error
+
+	for _, baseURL := range baseURLs {
+		resp, err := c.doRequestOnce(ctx, method, baseURL, path, body, headers)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if !looksLikeHTML(resp) {
+			c.baseURL = baseURL
+			return resp, nil
+		}
+		lastResp = resp
+		lastErr = fmt.Errorf("服务器返回 HTML (status=%d, base_url=%s)", resp.StatusCode, baseURL)
+	}
+
+	if lastResp != nil {
+		return lastResp, nil
+	}
+	return nil, lastErr
+}
+
+func (c *Client) doRequestOnce(ctx context.Context, method, baseURL, path string, body interface{}, headers map[string]string) (*Response, error) {
+	url := baseURL + path
 
 	var bodyReader io.Reader
 	if body != nil {
@@ -265,6 +344,9 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	if c.jwtToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.jwtToken)
+	}
 
 	// 添加 cookies
 	for _, cookie := range c.cookies {
@@ -294,6 +376,29 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	}, nil
 }
 
+func (c *Client) requestBaseURLs() []string {
+	if len(c.baseURLs) == 0 {
+		return []string{c.baseURL}
+	}
+
+	out := make([]string, 0, len(c.baseURLs))
+	if c.baseURL != "" {
+		out = append(out, c.baseURL)
+	}
+	for _, baseURL := range c.baseURLs {
+		if baseURL != c.baseURL {
+			out = append(out, baseURL)
+		}
+	}
+	return out
+}
+
+func looksLikeHTML(resp *Response) bool {
+	body := strings.TrimSpace(string(resp.Body))
+	contentType := strings.ToLower(resp.Headers.Get("Content-Type"))
+	return strings.HasPrefix(body, "<") || strings.Contains(contentType, "text/html")
+}
+
 func (c *Client) SetCookies(cookies []*http.Cookie) {
 	c.cookieMu.Lock()
 	defer c.cookieMu.Unlock()
@@ -314,7 +419,7 @@ func (c *Client) GetCookies() []*http.Cookie {
 
 // SaveCookies 保存 cookies 到文件
 func (c *Client) SaveCookies() error {
-	if len(c.cookies) == 0 {
+	if len(c.cookies) == 0 && c.jwtToken == "" && c.userID == "" && c.username == "" {
 		return nil
 	}
 
@@ -336,6 +441,7 @@ func (c *Client) SaveCookies() error {
 		Cookies:  cookieData,
 		UserID:   c.userID,
 		Username: c.username,
+		JWTToken: c.jwtToken,
 	}
 
 	data, err := json.MarshalIndent(sessionData, "", "  ")
@@ -362,7 +468,7 @@ func (c *Client) LoadCookies() error {
 
 	// 尝试解析为新格式（SessionData）
 	var sessionData SessionData
-	if err := json.Unmarshal(data, &sessionData); err == nil && len(sessionData.Cookies) > 0 {
+	if err := json.Unmarshal(data, &sessionData); err == nil && sessionData.hasData() {
 		// 新格式
 		now := time.Now()
 		validCookies := make([]*http.Cookie, 0)
@@ -382,12 +488,11 @@ func (c *Client) LoadCookies() error {
 			})
 		}
 
-		if len(validCookies) > 0 {
-			c.cookies = validCookies
-			c.userID = sessionData.UserID
-			c.username = sessionData.Username
-			logger.Info("加载会话成功", "count", len(validCookies), "user_id", c.userID)
-		}
+		c.cookies = validCookies
+		c.userID = sessionData.UserID
+		c.username = sessionData.Username
+		c.jwtToken = sessionData.JWTToken
+		logger.Info("加载会话成功", "count", len(validCookies), "user_id", c.userID, "has_jwt", c.jwtToken != "")
 
 		return nil
 	}
@@ -425,8 +530,23 @@ func (c *Client) LoadCookies() error {
 	return nil
 }
 
+func (c *Client) SetJWTToken(token string) {
+	c.jwtToken = strings.TrimSpace(token)
+	if err := c.SaveCookies(); err != nil {
+		logger.Warn("保存 JWT 会话失败", "error", err)
+	}
+}
+
+func (c *Client) GetJWTToken() string {
+	return c.jwtToken
+}
+
 // HasValidCookies 检查是否有有效的登录 cookies
 func (c *Client) HasValidCookies() bool {
+	if c.jwtToken != "" {
+		return true
+	}
+
 	now := time.Now()
 	for _, cookie := range c.cookies {
 		// 检查是否有 remember 或 AVS cookie 且未过期
@@ -437,6 +557,10 @@ func (c *Client) HasValidCookies() bool {
 		}
 	}
 	return false
+}
+
+func (s *SessionData) hasData() bool {
+	return len(s.Cookies) > 0 || s.UserID != "" || s.Username != "" || s.JWTToken != ""
 }
 
 // SetUserInfo 设置用户信息（用于缓存）

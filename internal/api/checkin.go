@@ -29,7 +29,7 @@ func (a *CheckInAPI) GetDailyList(ctx context.Context) (*DailyListData, error) {
 		return nil, fmt.Errorf("用户ID为空，无法执行签到操作")
 	}
 
-	ts := time.Now().Unix()
+	ts := time.Now().UnixMilli()
 
 	formData := map[string]string{
 		"data": fmt.Sprintf("%d", time.Now().Year()),
@@ -58,7 +58,7 @@ func (a *CheckInAPI) GetDailyList(ctx context.Context) (*DailyListData, error) {
 }
 
 func (a *CheckInAPI) DailyCheckIn(ctx context.Context, dailyID string) (*DailyChkData, error) {
-	ts := time.Now().Unix()
+	ts := time.Now().UnixMilli()
 
 	formData := map[string]string{
 		"user_id":  a.userID,

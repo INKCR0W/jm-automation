@@ -67,6 +67,38 @@ func DecodeRespData(data string, ts int64, secret ...string) (string, error) {
 	return string(plaintext), nil
 }
 
+func DecodeBase64ECBPKCS7(data, key string) (string, error) {
+	ciphertext, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return "", fmt.Errorf("base64 decode failed: %w", err)
+	}
+
+	plaintext, err := aesECBDecrypt(ciphertext, []byte(key))
+	if err != nil {
+		return "", fmt.Errorf("aes decrypt failed: %w", err)
+	}
+
+	return string(removePKCS7Padding(plaintext)), nil
+}
+
+func DecodeRespDataWithSeeds(data string, ts int64, seeds ...string) (string, error) {
+	if len(seeds) == 0 {
+		seeds = []string{AppDataSecret}
+	}
+
+	var lastErr error
+	for _, seed := range seeds {
+		key := MD5Hex(fmt.Sprintf("%d%s", ts, seed))
+		plaintext, err := DecodeBase64ECBPKCS7(data, key)
+		if err == nil {
+			return plaintext, nil
+		}
+		lastErr = err
+	}
+
+	return "", fmt.Errorf("all response decrypt seeds failed: %w", lastErr)
+}
+
 // aesECBDecrypt AES-ECB 模式解密
 // Go 标准库不直接支持 ECB 模式，需要手动实现
 func aesECBDecrypt(ciphertext, key []byte) ([]byte, error) {

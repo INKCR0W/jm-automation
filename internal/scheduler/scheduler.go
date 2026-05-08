@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/INKCR0W/jm-automation/internal/api"
 	"github.com/INKCR0W/jm-automation/internal/client"
 	"github.com/INKCR0W/jm-automation/internal/config"
 	"github.com/INKCR0W/jm-automation/internal/task"
@@ -18,6 +19,7 @@ type Scheduler struct {
 	cron      *cron.Cron
 	config    *config.Config
 	clientMap map[string]*client.Client
+	baseURLs  []string
 	mu        sync.Mutex
 }
 
@@ -31,10 +33,18 @@ func New(cfg *config.Config) (*Scheduler, error) {
 	// 创建定时任务，设置时区
 	cronInstance := cron.New(cron.WithSeconds(), cron.WithLocation(loc))
 
+	baseURLs := api.ResolveDynamicBaseURLs(context.Background())
+	if cfg.Server.BaseURL != "" {
+		baseURLs = append([]string{cfg.Server.BaseURL}, baseURLs...)
+	}
+	baseURLs = uniqueBaseURLs(baseURLs)
+	logger.Info("API 域名候选加载完成", "count", len(baseURLs), "primary", baseURLs[0])
+
 	return &Scheduler{
 		cron:      cronInstance,
 		config:    cfg,
 		clientMap: make(map[string]*client.Client),
+		baseURLs:  baseURLs,
 	}, nil
 }
 
@@ -143,9 +153,29 @@ func (s *Scheduler) getOrCreateClient(username string) (*client.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("创建客户端失败: %w", err)
 	}
+	c.SetBaseURLs(s.baseURLs)
 
 	s.clientMap[username] = c
 	logger.Info("为账号创建新的客户端实例", "username", username)
 
 	return c, nil
+}
+
+func uniqueBaseURLs(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		out = []string{api.DefaultBaseURL}
+	}
+	return out
 }

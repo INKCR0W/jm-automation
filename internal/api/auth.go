@@ -35,7 +35,7 @@ func (a *AuthAPI) Login(ctx context.Context, username, password string) (*LoginD
 		if cachedUserID != "" && cachedUsername != "" {
 			// 尝试调用一个需要登录的接口来验证登录状态
 			// 使用获取收藏夹接口作为验证（轻量级接口）
-			ts := time.Now().Unix()
+			ts := time.Now().UnixMilli()
 			resp, err := a.client.GetWithToken(ctx, "/favorite?page=1&folder_id=0&o=mr", ts, AppVersion)
 			if err == nil && resp.StatusCode == 200 {
 				// 尝试解密响应，如果成功说明登录状态有效
@@ -66,7 +66,7 @@ func (a *AuthAPI) Login(ctx context.Context, username, password string) (*LoginD
 		}
 	}
 
-	ts := time.Now().Unix()
+	ts := time.Now().UnixMilli()
 
 	formData := map[string]string{
 		"username":       username,
@@ -97,7 +97,10 @@ func (a *AuthAPI) Login(ctx context.Context, username, password string) (*LoginD
 		return nil, fmt.Errorf("登录响应中缺少用户ID")
 	}
 	if loginData.Username == "" {
-		return nil, fmt.Errorf("登录响应中缺少用户名")
+		loginData.Username = loginData.Nickname
+	}
+	if loginData.Username == "" {
+		loginData.Username = username
 	}
 
 	a.avs = loginData.S
@@ -111,6 +114,10 @@ func (a *AuthAPI) Login(ctx context.Context, username, password string) (*LoginD
 	allCookies := a.client.GetCookies()
 	allCookies = append(allCookies, cookie)
 	a.client.SetCookies(allCookies)
+
+	if loginData.JWTToken != "" {
+		a.client.SetJWTToken(loginData.JWTToken)
+	}
 
 	a.client.SetUserInfo(loginData.UID, loginData.Username)
 

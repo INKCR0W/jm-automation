@@ -4,10 +4,13 @@ package api
 
 const (
 	// APP 版本
-	AppVersion = "2.0.13"
+	AppVersion = "2.0.20"
 
 	// 默认域名（会自动更新）
-	DefaultBaseURL = "https://www.cdnsha.org"
+	DefaultBaseURL = "https://www.cdnhjk.net"
+
+	// 远程域名配置
+	HostConfigSecret = "diosfjckwpqpdfjkvnqQjsik"
 
 	// API 路径
 	PathLogin          = "/login"
@@ -45,10 +48,13 @@ const (
 
 // API 域名列表（会自动更新）
 var DomainAPIList = []string{
+	"www.cdnhjk.net",
 	"www.cdnsha.org",
-	"www.cdnbea.cc",
-	"www.cdnbea.net",
-	"www.cdn-mspjmapiproxy.xyz",
+}
+
+var HostConfigURLs = []string{
+	"https://rup4a04-c02.tos-cn-hongkong.bytepluses.com/newsvr-2025.txt",
+	"https://rup4a04-c01.tos-ap-southeast-1.bytepluses.com/newsvr-2025.txt",
 }
 
 // 图片 CDN 域名列表

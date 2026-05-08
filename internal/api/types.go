@@ -16,7 +16,9 @@ type LoginRequest struct {
 type LoginData struct {
 	UID      string `json:"uid"`
 	Username string `json:"username"`
-	S        string `json:"s"` // AVS Cookie 值
+	Nickname string `json:"nickname"`
+	S        string `json:"s"`        // AVS Cookie 值（旧接口）
+	JWTToken string `json:"jwttoken"` // 新接口 Bearer token
 	Level    int    `json:"level"`
 	Exp      string `json:"exp"`
 }
