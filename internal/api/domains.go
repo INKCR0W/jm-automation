@@ -69,7 +69,9 @@ func fetchHostConfig(ctx context.Context) (string, error) {
 		}
 
 		body, readErr := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			logger.Debug("关闭远程域名配置响应失败", "error", closeErr)
+		}
 		if readErr != nil {
 			lastErr = readErr
 			continue

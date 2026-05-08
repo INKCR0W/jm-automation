@@ -1,4 +1,4 @@
-version: 2
+version: "2"
 
 run:
   timeout: 5m
@@ -14,27 +14,32 @@ linters:
     - unused        # 检查未使用的代码
     - misspell      # 检查拼写错误
 
-linters-settings:
-  errcheck:
-    check-type-assertions: true
-    check-blank: true
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+      exclude-functions:
+        - (*go.uber.org/zap.Logger).Sync
 
-  govet:
-    enable:
-      - shadow
-    disable:
-      - fieldalignment
+    govet:
+      enable:
+        - shadow
+      disable:
+        - fieldalignment
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
 
 issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-
   max-issues-per-linter: 0
   max-same-issues: 0
 
 output:
-  format: colored-line-number
-  print-issued-lines: true
-  print-linter-name: true
+  formats:
+    text:
+      path: stdout
+      print-issued-lines: true
+      print-linter-name: true

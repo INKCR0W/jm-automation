@@ -261,7 +261,11 @@ func (c *Client) doRequestRawOnce(ctx context.Context, method, baseURL, path, bo
 	if err != nil {
 		return nil, fmt.Errorf("请求失败: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			logger.Debug("关闭响应体失败", "error", closeErr)
+		}
+	}()
 
 	// 保存 cookies
 	if cookies := resp.Cookies(); len(cookies) > 0 {
@@ -357,7 +361,11 @@ func (c *Client) doRequestOnce(ctx context.Context, method, baseURL, path string
 	if err != nil {
 		return nil, fmt.Errorf("请求失败: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			logger.Debug("关闭响应体失败", "error", closeErr)
+		}
+	}()
 
 	// 保存 cookies
 	if cookies := resp.Cookies(); len(cookies) > 0 {

@@ -21,8 +21,8 @@ func TestLoadCookiesSupportsJWTOnlySession(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	if err := os.Chdir(tmpDir); err != nil {
-		t.Fatalf("chdir temp dir failed: %v", err)
+	if chdirErr := os.Chdir(tmpDir); chdirErr != nil {
+		t.Fatalf("chdir temp dir failed: %v", chdirErr)
 	}
 	defer func() { _ = os.Chdir(wd) }()
 
