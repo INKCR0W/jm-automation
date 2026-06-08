@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -179,6 +180,85 @@ func TestSaveAndLoadCookiesPreservesSecurityAttributes(t *testing.T) {
 	}
 	if !cookies[0].HttpOnly {
 		t.Fatal("loaded cookie HttpOnly = false, want true")
+	}
+}
+
+func TestDecryptResponseRejectsMalformedResponses(t *testing.T) {
+	c := &Client{}
+	ts := int64(1700000000000)
+
+	tests := []struct {
+		name    string
+		resp    *Response
+		wantErr string
+	}{
+		{
+			name: "non json response",
+			resp: &Response{
+				StatusCode: http.StatusOK,
+				Body:       []byte("plain text"),
+				Headers: http.Header{
+					"Content-Type": {"text/plain"},
+				},
+			},
+			wantErr: "解析加密响应失败",
+		},
+		{
+			name: "html response",
+			resp: &Response{
+				StatusCode: http.StatusOK,
+				Body:       []byte("<html>blocked</html>"),
+				Headers: http.Header{
+					"Content-Type": {"text/html"},
+				},
+			},
+			wantErr: "服务器返回 HTML",
+		},
+		{
+			name: "api error response",
+			resp: &Response{
+				StatusCode: http.StatusOK,
+				Body:       []byte(`{"code":-1,"errorMsg":"bad token"}`),
+				Headers: http.Header{
+					"Content-Type": {"application/json"},
+				},
+			},
+			wantErr: "API 返回错误 (code=-1): bad token",
+		},
+		{
+			name: "invalid base64 data",
+			resp: &Response{
+				StatusCode: http.StatusOK,
+				Body:       []byte(`{"code":200,"data":"%%%not-base64%%%"}`),
+				Headers: http.Header{
+					"Content-Type": {"application/json"},
+				},
+			},
+			wantErr: "base64 decode failed",
+		},
+		{
+			name: "ciphertext is not block aligned",
+			resp: &Response{
+				StatusCode: http.StatusOK,
+				Body:       []byte(`{"code":200,"data":"` + base64.StdEncoding.EncodeToString([]byte("short")) + `"}`),
+				Headers: http.Header{
+					"Content-Type": {"application/json"},
+				},
+			},
+			wantErr: "ciphertext is not a multiple of the block size",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := c.DecryptResponse(tt.resp, ts)
+			if err == nil {
+				t.Fatal("DecryptResponse returned nil error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.wantErr)
+			}
+		})
 	}
 }
 

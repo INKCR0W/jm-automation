@@ -36,7 +36,12 @@ func TokenAndTokenParam(ts int64, version string, secret ...string) (string, str
 	return token, tokenparam
 }
 
-// DecodeRespData 解密 API 响应数据
+// DecodeRespData 解密 API 响应数据。
+//
+// 兼容性说明：上游 JM API 当前使用 Base64 + AES-ECB + PKCS7 padding 的响应协议。
+// ECB 模式没有随机 IV，也不提供认证完整性校验；这里保留该实现是为了兼容既定上游协议，
+// 不是新协议设计的推荐方案。除非上游协议提供签名/MAC 字段，否则不要在客户端侧擅自改成
+// AES-GCM 或追加本地完整性校验，否则会破坏与真实 API 的互通。
 // data: base64 编码的加密数据
 // ts: 时间戳（必须与请求时使用的时间戳一致）
 // secret: 密钥（可选，默认使用 AppDataSecret）
@@ -62,7 +67,10 @@ func DecodeRespData(data string, ts int64, secret ...string) (string, error) {
 	}
 
 	// 4. 移除 PKCS7 padding
-	plaintext = removePKCS7Padding(plaintext)
+	plaintext, err = removePKCS7Padding(plaintext)
+	if err != nil {
+		return "", fmt.Errorf("pkcs7 unpad failed: %w", err)
+	}
 
 	return string(plaintext), nil
 }
@@ -78,7 +86,12 @@ func DecodeBase64ECBPKCS7(data, key string) (string, error) {
 		return "", fmt.Errorf("aes decrypt failed: %w", err)
 	}
 
-	return string(removePKCS7Padding(plaintext)), nil
+	plaintext, err = removePKCS7Padding(plaintext)
+	if err != nil {
+		return "", fmt.Errorf("pkcs7 unpad failed: %w", err)
+	}
+
+	return string(plaintext), nil
 }
 
 func DecodeRespDataWithSeeds(data string, ts int64, seeds ...string) (string, error) {
@@ -99,8 +112,9 @@ func DecodeRespDataWithSeeds(data string, ts int64, seeds ...string) (string, er
 	return "", fmt.Errorf("all response decrypt seeds failed: %w", lastErr)
 }
 
-// aesECBDecrypt AES-ECB 模式解密
-// Go 标准库不直接支持 ECB 模式，需要手动实现
+// aesECBDecrypt AES-ECB 模式解密。
+// 仅用于兼容上游 JM API 既定响应协议；ECB 不应作为新协议设计选择。
+// Go 标准库不直接支持 ECB 模式，需要手动实现。
 func aesECBDecrypt(ciphertext, key []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -122,25 +136,25 @@ func aesECBDecrypt(ciphertext, key []byte) ([]byte, error) {
 }
 
 // removePKCS7Padding 移除 PKCS7 填充
-func removePKCS7Padding(data []byte) []byte {
+func removePKCS7Padding(data []byte) ([]byte, error) {
 	if len(data) == 0 {
-		return data
+		return nil, fmt.Errorf("pkcs7 padding: empty plaintext")
 	}
 
 	// 最后一个字节表示填充的长度
 	padding := int(data[len(data)-1])
 
 	// 验证填充是否有效
-	if padding > len(data) || padding > aes.BlockSize {
-		return data
+	if padding == 0 || padding > len(data) || padding > aes.BlockSize {
+		return nil, fmt.Errorf("pkcs7 padding: invalid padding length %d", padding)
 	}
 
 	// 检查填充字节是否都相同
 	for i := len(data) - padding; i < len(data); i++ {
 		if data[i] != byte(padding) {
-			return data
+			return nil, fmt.Errorf("pkcs7 padding: invalid padding byte")
 		}
 	}
 
-	return data[:len(data)-padding]
+	return data[:len(data)-padding], nil
 }
