@@ -138,8 +138,8 @@ func newAuthTestClient(t *testing.T) *client.Client {
 	}
 
 	tmpDir := t.TempDir()
-	if err := os.Chdir(tmpDir); err != nil {
-		t.Fatalf("chdir temp dir failed: %v", err)
+	if chdirErr := os.Chdir(tmpDir); chdirErr != nil {
+		t.Fatalf("chdir temp dir failed: %v", chdirErr)
 	}
 	t.Cleanup(func() { _ = os.Chdir(wd) })
 
