@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/url"
 	"os"
@@ -59,6 +60,96 @@ func TestLoadCookiesSupportsJWTOnlySession(t *testing.T) {
 	}
 }
 
+func TestDoRequestOnceBuildsJSONRequest(t *testing.T) {
+	stub := &stubHTTPClient{}
+	c := &Client{
+		httpClient: stub,
+		baseURL:    "https://example.test",
+		cookieFile: t.TempDir() + "/session.json",
+	}
+	c.applySession(nil, "", "", "jwt-123")
+
+	resp, err := c.doRequestOnce(
+		context.Background(),
+		http.MethodPost,
+		"https://example.test",
+		"/api/login",
+		map[string]string{"username": "tester"},
+		map[string]string{"x-client": "jm-auto"},
+	)
+	if err != nil {
+		t.Fatalf("doRequestOnce failed: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	req := stub.lastRequest(t)
+	if req.method != http.MethodPost {
+		t.Fatalf("method = %q, want %q", req.method, http.MethodPost)
+	}
+	if req.url != "https://example.test/api/login" {
+		t.Fatalf("url = %q, want https://example.test/api/login", req.url)
+	}
+	if req.body != `{"username":"tester"}` {
+		t.Fatalf("body = %q, want JSON username payload", req.body)
+	}
+	if got := req.header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("content-type = %q, want application/json", got)
+	}
+	if got := req.header.Get("Authorization"); got != "Bearer jwt-123" {
+		t.Fatalf("authorization = %q, want Bearer jwt-123", got)
+	}
+	if got := req.header.Get("x-client"); got != "jm-auto" {
+		t.Fatalf("x-client = %q, want jm-auto", got)
+	}
+}
+
+func TestDoRequestRawOncePreservesRawBodyAndCookies(t *testing.T) {
+	stub := &stubHTTPClient{
+		responseHeader: http.Header{
+			"Set-Cookie": {"AVS=response-token; Path=/"},
+		},
+	}
+	c := &Client{
+		httpClient: stub,
+		baseURL:    "https://example.test",
+		cookieFile: t.TempDir() + "/session.json",
+	}
+	c.setCookies([]*http.Cookie{{Name: "remember", Value: "cookie-token"}})
+
+	_, err := c.doRequestRawOnce(
+		context.Background(),
+		http.MethodPost,
+		"https://example.test",
+		"/api/checkin",
+		"album_id=42&like=1",
+		map[string]string{"Content-Type": "application/x-www-form-urlencoded"},
+	)
+	if err != nil {
+		t.Fatalf("doRequestRawOnce failed: %v", err)
+	}
+
+	req := stub.lastRequest(t)
+	if req.body != "album_id=42&like=1" {
+		t.Fatalf("body = %q, want raw form payload", req.body)
+	}
+	if got := req.header.Get("Content-Type"); got != "application/x-www-form-urlencoded" {
+		t.Fatalf("content-type = %q, want application/x-www-form-urlencoded", got)
+	}
+	if got := req.header.Get("Cookie"); got != "remember=cookie-token" {
+		t.Fatalf("cookie header = %q, want remember=cookie-token", got)
+	}
+
+	cookies := c.GetCookies()
+	if len(cookies) != 2 {
+		t.Fatalf("cookie count = %d, want 2", len(cookies))
+	}
+	if cookies[1].Name != "AVS" || cookies[1].Value != "response-token" {
+		t.Fatalf("response cookie = %s=%s, want AVS=response-token", cookies[1].Name, cookies[1].Value)
+	}
+}
+
 func TestClientConcurrentCookieAccessIsRaceFree(t *testing.T) {
 	c := &Client{
 		httpClient: &stubHTTPClient{},
@@ -103,7 +194,30 @@ func TestClientConcurrentCookieAccessIsRaceFree(t *testing.T) {
 	wg.Wait()
 }
 
-type stubHTTPClient struct{}
+type capturedRequest struct {
+	method string
+	url    string
+	header http.Header
+	body   string
+}
+
+type stubHTTPClient struct {
+	mu             sync.Mutex
+	requests       []capturedRequest
+	responseHeader http.Header
+}
+
+func (s *stubHTTPClient) lastRequest(t *testing.T) capturedRequest {
+	t.Helper()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.requests) == 0 {
+		t.Fatal("no request captured")
+	}
+	return s.requests[len(s.requests)-1]
+}
 
 func (s *stubHTTPClient) GetCookies(_ *url.URL) []*http.Cookie    { return nil }
 func (s *stubHTTPClient) SetCookies(_ *url.URL, _ []*http.Cookie) {}
@@ -114,10 +228,36 @@ func (s *stubHTTPClient) GetProxy() string                        { return "" }
 func (s *stubHTTPClient) SetFollowRedirect(_ bool)                {}
 func (s *stubHTTPClient) GetFollowRedirect() bool                 { return false }
 func (s *stubHTTPClient) CloseIdleConnections()                   {}
-func (s *stubHTTPClient) Do(_ *http.Request) (*http.Response, error) {
+func (s *stubHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	if req == nil {
+		return nil, errors.New("request is nil")
+	}
+
+	var body string
+	if req.Body != nil {
+		bodyBytes, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		body = string(bodyBytes)
+	}
+
+	s.mu.Lock()
+	s.requests = append(s.requests, capturedRequest{
+		method: req.Method,
+		url:    req.URL.String(),
+		header: req.Header.Clone(),
+		body:   body,
+	})
+	responseHeader := s.responseHeader.Clone()
+	s.mu.Unlock()
+	if responseHeader == nil {
+		responseHeader = make(http.Header)
+	}
+
 	return &http.Response{
 		StatusCode: http.StatusOK,
-		Header:     make(http.Header),
+		Header:     responseHeader,
 		Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
 	}, nil
 }

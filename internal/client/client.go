@@ -228,13 +228,27 @@ func (c *Client) doRequestRaw(ctx context.Context, method, path, body string, he
 }
 
 func (c *Client) doRequestRawOnce(ctx context.Context, method, baseURL, path, body string, headers map[string]string) (*Response, error) {
-	url := baseURL + path
+	return c.executeRequestOnce(ctx, requestOptions{
+		method:  method,
+		url:     baseURL + path,
+		body:    strings.NewReader(body),
+		headers: headers,
+	})
+}
 
-	req, err := http.NewRequestWithContext(ctx, method, url, strings.NewReader(body))
+type requestOptions struct {
+	method             string
+	url                string
+	body               io.Reader
+	headers            map[string]string
+	defaultContentType string
+}
+
+func (c *Client) executeRequestOnce(ctx context.Context, opts requestOptions) (*Response, error) {
+	req, err := http.NewRequestWithContext(ctx, opts.method, opts.url, opts.body)
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
-
 	// 设置默认 headers（与 Chrome 144 TLS Profile 匹配）
 	// 使用 Chrome 浏览器的标准 header 顺序
 	req.Header = http.Header{
@@ -249,9 +263,12 @@ func (c *Client) doRequestRawOnce(ctx context.Context, method, baseURL, path, bo
 			"user-agent",
 		},
 	}
+	if opts.defaultContentType != "" {
+		req.Header.Set("Content-Type", opts.defaultContentType)
+	}
 
 	// 自定义 headers
-	for k, v := range headers {
+	for k, v := range opts.headers {
 		req.Header.Set(k, v)
 	}
 	if jwtToken := c.getJWTTokenSnapshot(); jwtToken != "" {
@@ -316,78 +333,24 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 }
 
 func (c *Client) doRequestOnce(ctx context.Context, method, baseURL, path string, body interface{}, headers map[string]string) (*Response, error) {
-	url := baseURL + path
-
 	var bodyReader io.Reader
+	var defaultContentType string
 	if body != nil {
 		jsonData, err := json.Marshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("序列化请求体失败: %w", err)
 		}
 		bodyReader = strings.NewReader(string(jsonData))
+		defaultContentType = "application/json"
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
-	if err != nil {
-		return nil, fmt.Errorf("创建请求失败: %w", err)
-	}
-
-	// 设置默认 headers（与 Chrome 144 TLS Profile 匹配）
-	// 使用 Chrome 浏览器的标准 header 顺序
-	req.Header = http.Header{
-		"accept":          {"application/json, text/plain, */*"},
-		"accept-encoding": {"gzip, deflate, br"},
-		"accept-language": {"zh-CN,zh;q=0.9,en;q=0.8"},
-		"user-agent":      {"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36"},
-		http.HeaderOrderKey: {
-			"accept",
-			"accept-encoding",
-			"accept-language",
-			"user-agent",
-		},
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	// 自定义 headers
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
-	if jwtToken := c.getJWTTokenSnapshot(); jwtToken != "" {
-		req.Header.Set("Authorization", "Bearer "+jwtToken)
-	}
-
-	// 添加 cookies
-	for _, cookie := range c.cookieSnapshot() {
-		req.AddCookie(cookie)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("请求失败: %w", err)
-	}
-	defer func() {
-		if closeErr := resp.Body.Close(); closeErr != nil {
-			logger.Debug("关闭响应体失败", "error", closeErr)
-		}
-	}()
-
-	// 保存 cookies
-	if cookies := resp.Cookies(); len(cookies) > 0 {
-		c.appendCookies(cookies)
-	}
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("读取响应失败: %w", err)
-	}
-
-	return &Response{
-		StatusCode: resp.StatusCode,
-		Body:       respBody,
-		Headers:    resp.Header,
-	}, nil
+	return c.executeRequestOnce(ctx, requestOptions{
+		method:             method,
+		url:                baseURL + path,
+		body:               bodyReader,
+		headers:            headers,
+		defaultContentType: defaultContentType,
+	})
 }
 
 func (c *Client) requestBaseURLs() []string {
