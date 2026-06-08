@@ -150,6 +150,77 @@ func TestDoRequestRawOncePreservesRawBodyAndCookies(t *testing.T) {
 	}
 }
 
+func TestDoWithBaseURLFallbackRetriesHTMLAndPromotesWorkingBaseURL(t *testing.T) {
+	c := &Client{
+		baseURL:    "https://html.test",
+		baseURLs:   []string{"https://html.test", "https://json.test"},
+		cookieFile: t.TempDir() + "/session.json",
+	}
+
+	calls := make([]string, 0, 2)
+	resp, err := c.doWithBaseURLFallback(func(baseURL string) (*Response, error) {
+		calls = append(calls, baseURL)
+		if baseURL == "https://html.test" {
+			return &Response{
+				StatusCode: http.StatusOK,
+				Body:       []byte("<html>blocked</html>"),
+				Headers: http.Header{
+					"Content-Type": {"text/html; charset=utf-8"},
+				},
+			}, nil
+		}
+
+		return &Response{
+			StatusCode: http.StatusOK,
+			Body:       []byte(`{"ok":true}`),
+			Headers: http.Header{
+				"Content-Type": {"application/json"},
+			},
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("fallback request failed: %v", err)
+	}
+
+	if got := strings.Join(calls, ","); got != "https://html.test,https://json.test" {
+		t.Fatalf("called base URLs = %q, want html then json", got)
+	}
+	if string(resp.Body) != `{"ok":true}` {
+		t.Fatalf("response body = %q, want json response from fallback base URL", string(resp.Body))
+	}
+	if got := c.BaseURL(); got != "https://json.test" {
+		t.Fatalf("baseURL = %q, want promoted working base URL", got)
+	}
+}
+
+func TestDoWithBaseURLFallbackReturnsLastHTMLResponse(t *testing.T) {
+	c := &Client{
+		baseURL:    "https://one.test",
+		baseURLs:   []string{"https://one.test", "https://two.test"},
+		cookieFile: t.TempDir() + "/session.json",
+	}
+
+	resp, err := c.doWithBaseURLFallback(func(baseURL string) (*Response, error) {
+		return &Response{
+			StatusCode: http.StatusOK,
+			Body:       []byte("<html>" + baseURL + "</html>"),
+			Headers: http.Header{
+				"Content-Type": {"text/html"},
+			},
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("all-html fallback returned error: %v", err)
+	}
+
+	if string(resp.Body) != "<html>https://two.test</html>" {
+		t.Fatalf("response body = %q, want last HTML response", string(resp.Body))
+	}
+	if got := c.BaseURL(); got != "https://one.test" {
+		t.Fatalf("baseURL = %q, want original base URL when every candidate returns HTML", got)
+	}
+}
+
 func TestClientConcurrentCookieAccessIsRaceFree(t *testing.T) {
 	c := &Client{
 		httpClient: &stubHTTPClient{},

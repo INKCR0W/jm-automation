@@ -203,28 +203,9 @@ func (c *Client) Post(ctx context.Context, path string, body interface{}, header
 }
 
 func (c *Client) doRequestRaw(ctx context.Context, method, path, body string, headers map[string]string) (*Response, error) {
-	baseURLs := c.requestBaseURLs()
-	var lastResp *Response
-	var lastErr error
-
-	for _, baseURL := range baseURLs {
-		resp, err := c.doRequestRawOnce(ctx, method, baseURL, path, body, headers)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if !looksLikeHTML(resp) {
-			c.setBaseURL(baseURL)
-			return resp, nil
-		}
-		lastResp = resp
-		lastErr = fmt.Errorf("服务器返回 HTML (status=%d, base_url=%s)", resp.StatusCode, baseURL)
-	}
-
-	if lastResp != nil {
-		return lastResp, nil
-	}
-	return nil, lastErr
+	return c.doWithBaseURLFallback(func(baseURL string) (*Response, error) {
+		return c.doRequestRawOnce(ctx, method, baseURL, path, body, headers)
+	})
 }
 
 func (c *Client) doRequestRawOnce(ctx context.Context, method, baseURL, path, body string, headers map[string]string) (*Response, error) {
@@ -308,12 +289,18 @@ func (c *Client) executeRequestOnce(ctx context.Context, opts requestOptions) (*
 }
 
 func (c *Client) doRequest(ctx context.Context, method, path string, body interface{}, headers map[string]string) (*Response, error) {
+	return c.doWithBaseURLFallback(func(baseURL string) (*Response, error) {
+		return c.doRequestOnce(ctx, method, baseURL, path, body, headers)
+	})
+}
+
+func (c *Client) doWithBaseURLFallback(execute func(baseURL string) (*Response, error)) (*Response, error) {
 	baseURLs := c.requestBaseURLs()
 	var lastResp *Response
 	var lastErr error
 
 	for _, baseURL := range baseURLs {
-		resp, err := c.doRequestOnce(ctx, method, baseURL, path, body, headers)
+		resp, err := execute(baseURL)
 		if err != nil {
 			lastErr = err
 			continue
