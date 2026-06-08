@@ -37,7 +37,7 @@ type Client struct {
 	baseURLs   []string
 	timeout    time.Duration
 	cookies    []*http.Cookie
-	cookieMu   sync.RWMutex // 保护 cookies 的并发访问
+	sessionMu  sync.RWMutex // 保护 cookies、baseURL、JWT 和用户信息等会话状态的并发访问
 	cookieFile string
 	userID     string
 	username   string
@@ -104,6 +104,9 @@ func New(baseURL string, timeout time.Duration, username string) (*Client, error
 }
 
 func (c *Client) SetBaseURLs(baseURLs []string) {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+
 	c.baseURLs = make([]string, 0, len(baseURLs))
 	for _, baseURL := range baseURLs {
 		baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
@@ -117,6 +120,9 @@ func (c *Client) SetBaseURLs(baseURLs []string) {
 }
 
 func (c *Client) BaseURL() string {
+	c.sessionMu.RLock()
+	defer c.sessionMu.RUnlock()
+
 	return c.baseURL
 }
 
@@ -208,7 +214,7 @@ func (c *Client) doRequestRaw(ctx context.Context, method, path, body string, he
 			continue
 		}
 		if !looksLikeHTML(resp) {
-			c.baseURL = baseURL
+			c.setBaseURL(baseURL)
 			return resp, nil
 		}
 		lastResp = resp
@@ -248,12 +254,12 @@ func (c *Client) doRequestRawOnce(ctx context.Context, method, baseURL, path, bo
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	if c.jwtToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.jwtToken)
+	if jwtToken := c.getJWTTokenSnapshot(); jwtToken != "" {
+		req.Header.Set("Authorization", "Bearer "+jwtToken)
 	}
 
 	// 添加 cookies
-	for _, cookie := range c.cookies {
+	for _, cookie := range c.cookieSnapshot() {
 		req.AddCookie(cookie)
 	}
 
@@ -269,7 +275,7 @@ func (c *Client) doRequestRawOnce(ctx context.Context, method, baseURL, path, bo
 
 	// 保存 cookies
 	if cookies := resp.Cookies(); len(cookies) > 0 {
-		c.cookies = append(c.cookies, cookies...)
+		c.appendCookies(cookies)
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
@@ -296,7 +302,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 			continue
 		}
 		if !looksLikeHTML(resp) {
-			c.baseURL = baseURL
+			c.setBaseURL(baseURL)
 			return resp, nil
 		}
 		lastResp = resp
@@ -348,12 +354,12 @@ func (c *Client) doRequestOnce(ctx context.Context, method, baseURL, path string
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	if c.jwtToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.jwtToken)
+	if jwtToken := c.getJWTTokenSnapshot(); jwtToken != "" {
+		req.Header.Set("Authorization", "Bearer "+jwtToken)
 	}
 
 	// 添加 cookies
-	for _, cookie := range c.cookies {
+	for _, cookie := range c.cookieSnapshot() {
 		req.AddCookie(cookie)
 	}
 
@@ -369,7 +375,7 @@ func (c *Client) doRequestOnce(ctx context.Context, method, baseURL, path string
 
 	// 保存 cookies
 	if cookies := resp.Cookies(); len(cookies) > 0 {
-		c.cookies = append(c.cookies, cookies...)
+		c.appendCookies(cookies)
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
@@ -385,6 +391,9 @@ func (c *Client) doRequestOnce(ctx context.Context, method, baseURL, path string
 }
 
 func (c *Client) requestBaseURLs() []string {
+	c.sessionMu.RLock()
+	defer c.sessionMu.RUnlock()
+
 	if len(c.baseURLs) == 0 {
 		return []string{c.baseURL}
 	}
@@ -408,10 +417,10 @@ func looksLikeHTML(resp *Response) bool {
 }
 
 func (c *Client) SetCookies(cookies []*http.Cookie) {
-	c.cookieMu.Lock()
-	defer c.cookieMu.Unlock()
+	c.sessionMu.Lock()
+	c.cookies = cloneCookies(cookies)
+	c.sessionMu.Unlock()
 
-	c.cookies = cookies
 	// 自动保存 cookies
 	if err := c.SaveCookies(); err != nil {
 		logger.Warn("保存 cookies 失败", "error", err)
@@ -419,21 +428,22 @@ func (c *Client) SetCookies(cookies []*http.Cookie) {
 }
 
 func (c *Client) GetCookies() []*http.Cookie {
-	c.cookieMu.RLock()
-	defer c.cookieMu.RUnlock()
+	c.sessionMu.RLock()
+	defer c.sessionMu.RUnlock()
 
-	return c.cookies
+	return cloneCookies(c.cookies)
 }
 
 // SaveCookies 保存 cookies 到文件
 func (c *Client) SaveCookies() error {
-	if len(c.cookies) == 0 && c.jwtToken == "" && c.userID == "" && c.username == "" {
+	snapshot := c.sessionSnapshot()
+	if len(snapshot.cookies) == 0 && snapshot.jwtToken == "" && snapshot.userID == "" && snapshot.username == "" {
 		return nil
 	}
 
 	// 转换为可序列化的格式
-	cookieData := make([]CookieData, 0, len(c.cookies))
-	for _, cookie := range c.cookies {
+	cookieData := make([]CookieData, 0, len(snapshot.cookies))
+	for _, cookie := range snapshot.cookies {
 		cookieData = append(cookieData, CookieData{
 			Name:    cookie.Name,
 			Value:   cookie.Value,
@@ -447,9 +457,9 @@ func (c *Client) SaveCookies() error {
 	// 保存会话数据（包含 cookies 和用户信息）
 	sessionData := SessionData{
 		Cookies:  cookieData,
-		UserID:   c.userID,
-		Username: c.username,
-		JWTToken: c.jwtToken,
+		UserID:   snapshot.userID,
+		Username: snapshot.username,
+		JWTToken: snapshot.jwtToken,
 	}
 
 	data, err := json.MarshalIndent(sessionData, "", "  ")
@@ -496,11 +506,8 @@ func (c *Client) LoadCookies() error {
 			})
 		}
 
-		c.cookies = validCookies
-		c.userID = sessionData.UserID
-		c.username = sessionData.Username
-		c.jwtToken = sessionData.JWTToken
-		logger.Info("加载会话成功", "count", len(validCookies), "user_id", c.userID, "has_jwt", c.jwtToken != "")
+		c.applySession(validCookies, sessionData.UserID, sessionData.Username, sessionData.JWTToken)
+		logger.Info("加载会话成功", "count", len(validCookies), "user_id", sessionData.UserID, "has_jwt", sessionData.JWTToken != "")
 
 		return nil
 	}
@@ -531,7 +538,7 @@ func (c *Client) LoadCookies() error {
 	}
 
 	if len(validCookies) > 0 {
-		c.cookies = validCookies
+		c.setCookies(validCookies)
 		logger.Info("加载 cookies 成功（旧格式）", "count", len(validCookies))
 	}
 
@@ -539,18 +546,27 @@ func (c *Client) LoadCookies() error {
 }
 
 func (c *Client) SetJWTToken(token string) {
+	c.sessionMu.Lock()
 	c.jwtToken = strings.TrimSpace(token)
+	c.sessionMu.Unlock()
+
 	if err := c.SaveCookies(); err != nil {
 		logger.Warn("保存 JWT 会话失败", "error", err)
 	}
 }
 
 func (c *Client) GetJWTToken() string {
+	c.sessionMu.RLock()
+	defer c.sessionMu.RUnlock()
+
 	return c.jwtToken
 }
 
 // HasValidCookies 检查是否有有效的登录 cookies
 func (c *Client) HasValidCookies() bool {
+	c.sessionMu.RLock()
+	defer c.sessionMu.RUnlock()
+
 	if c.jwtToken != "" {
 		return true
 	}
@@ -571,10 +587,93 @@ func (s *SessionData) hasData() bool {
 	return len(s.Cookies) > 0 || s.UserID != "" || s.Username != "" || s.JWTToken != ""
 }
 
-// SetUserInfo 设置用户信息（用于缓存）
-func (c *Client) SetUserInfo(userID, username string) {
+type sessionSnapshot struct {
+	cookies  []*http.Cookie
+	userID   string
+	username string
+	jwtToken string
+}
+
+func (c *Client) sessionSnapshot() sessionSnapshot {
+	c.sessionMu.RLock()
+	defer c.sessionMu.RUnlock()
+
+	return sessionSnapshot{
+		cookies:  cloneCookies(c.cookies),
+		userID:   c.userID,
+		username: c.username,
+		jwtToken: c.jwtToken,
+	}
+}
+
+func (c *Client) cookieSnapshot() []*http.Cookie {
+	c.sessionMu.RLock()
+	defer c.sessionMu.RUnlock()
+
+	return cloneCookies(c.cookies)
+}
+
+func (c *Client) getJWTTokenSnapshot() string {
+	c.sessionMu.RLock()
+	defer c.sessionMu.RUnlock()
+
+	return c.jwtToken
+}
+
+func (c *Client) setBaseURL(baseURL string) {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+
+	c.baseURL = baseURL
+}
+
+func (c *Client) setCookies(cookies []*http.Cookie) {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+
+	c.cookies = cloneCookies(cookies)
+}
+
+func (c *Client) appendCookies(cookies []*http.Cookie) {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+
+	c.cookies = append(c.cookies, cloneCookies(cookies)...)
+}
+
+func (c *Client) applySession(cookies []*http.Cookie, userID, username, jwtToken string) {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+
+	c.cookies = cloneCookies(cookies)
 	c.userID = userID
 	c.username = username
+	c.jwtToken = jwtToken
+}
+
+func cloneCookies(cookies []*http.Cookie) []*http.Cookie {
+	if len(cookies) == 0 {
+		return nil
+	}
+
+	cloned := make([]*http.Cookie, 0, len(cookies))
+	for _, cookie := range cookies {
+		if cookie == nil {
+			continue
+		}
+		cookieCopy := *cookie
+		cloned = append(cloned, &cookieCopy)
+	}
+	return cloned
+}
+
+// SetUserInfo 设置用户信息（用于缓存）
+func (c *Client) SetUserInfo(userID, username string) {
+	c.sessionMu.Lock()
+	c.userID = userID
+	c.username = username
+	c.sessionMu.Unlock()
+
 	// 自动保存会话信息
 	if err := c.SaveCookies(); err != nil {
 		logger.Warn("保存会话信息失败", "error", err)
@@ -583,10 +682,16 @@ func (c *Client) SetUserInfo(userID, username string) {
 
 // GetUserID 获取缓存的用户 ID
 func (c *Client) GetUserID() string {
+	c.sessionMu.RLock()
+	defer c.sessionMu.RUnlock()
+
 	return c.userID
 }
 
 // GetUsername 获取缓存的用户名
 func (c *Client) GetUsername() string {
+	c.sessionMu.RLock()
+	defer c.sessionMu.RUnlock()
+
 	return c.username
 }
