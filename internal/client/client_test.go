@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/url"
@@ -21,10 +22,7 @@ import (
 )
 
 func TestLoadCookiesSupportsJWTOnlySession(t *testing.T) {
-	if err := logger.Init(config.LogConfig{Level: "error"}); err != nil {
-		t.Fatalf("init logger failed: %v", err)
-	}
-	t.Cleanup(logger.Sync)
+	initClientTestLogger(t)
 
 	wd, err := os.Getwd()
 	if err != nil {
@@ -57,6 +55,130 @@ func TestLoadCookiesSupportsJWTOnlySession(t *testing.T) {
 	}
 	if !loaded.HasValidCookies() {
 		t.Fatal("jwt-only session should be considered valid")
+	}
+}
+
+func TestLoadCookiesFiltersExpiredAndUnexpectedDomain(t *testing.T) {
+	initClientTestLogger(t)
+
+	c := newSessionTestClient(t, "https://api.example.test")
+	writeSessionFile(t, c.cookieFile, SessionData{
+		Cookies: []CookieData{
+			{
+				Name:    "valid",
+				Value:   "1",
+				Domain:  "api.example.test",
+				Expires: time.Now().Add(time.Hour),
+			},
+			{
+				Name:    "expired",
+				Value:   "2",
+				Domain:  "api.example.test",
+				Expires: time.Now().Add(-time.Hour),
+			},
+			{
+				Name:    "foreign",
+				Value:   "3",
+				Domain:  "evil.example.test",
+				Expires: time.Now().Add(time.Hour),
+			},
+			{
+				Name:    "host_only",
+				Value:   "4",
+				Expires: time.Now().Add(time.Hour),
+			},
+		},
+	})
+
+	if err := c.LoadCookies(); err != nil {
+		t.Fatalf("load cookies failed: %v", err)
+	}
+
+	assertCookieNames(t, c.GetCookies(), []string{"valid", "host_only"})
+}
+
+func TestLoadCookiesDropsSecureCookiesForHTTPBaseURL(t *testing.T) {
+	initClientTestLogger(t)
+
+	c := newSessionTestClient(t, "http://api.example.test")
+	writeSessionFile(t, c.cookieFile, SessionData{
+		Cookies: []CookieData{
+			{
+				Name:    "secure",
+				Value:   "1",
+				Domain:  "api.example.test",
+				Secure:  true,
+				Expires: time.Now().Add(time.Hour),
+			},
+			{
+				Name:    "plain",
+				Value:   "2",
+				Domain:  "api.example.test",
+				Expires: time.Now().Add(time.Hour),
+			},
+		},
+	})
+
+	if err := c.LoadCookies(); err != nil {
+		t.Fatalf("load cookies failed: %v", err)
+	}
+
+	assertCookieNames(t, c.GetCookies(), []string{"plain"})
+}
+
+func TestLoadCookiesSupportsLegacyCookieFormat(t *testing.T) {
+	initClientTestLogger(t)
+
+	c := newSessionTestClient(t, "https://api.example.test")
+	writeSessionFile(t, c.cookieFile, []CookieData{
+		{
+			Name:    "remember",
+			Value:   "legacy-token",
+			Domain:  "api.example.test",
+			Expires: time.Now().Add(time.Hour),
+		},
+	})
+
+	if err := c.LoadCookies(); err != nil {
+		t.Fatalf("load legacy cookies failed: %v", err)
+	}
+
+	cookies := c.GetCookies()
+	assertCookieNames(t, cookies, []string{"remember"})
+	if cookies[0].Value != "legacy-token" {
+		t.Fatalf("legacy cookie value = %q, want legacy-token", cookies[0].Value)
+	}
+}
+
+func TestSaveAndLoadCookiesPreservesSecurityAttributes(t *testing.T) {
+	initClientTestLogger(t)
+
+	c := newSessionTestClient(t, "https://api.example.test")
+	c.SetCookies([]*http.Cookie{
+		{
+			Name:     "secure",
+			Value:    "token",
+			Domain:   "api.example.test",
+			Path:     "/",
+			Secure:   true,
+			HttpOnly: true,
+			Expires:  time.Now().Add(time.Hour),
+		},
+	})
+
+	loaded := newSessionTestClient(t, "https://api.example.test")
+	loaded.cookieFile = c.cookieFile
+	if err := loaded.LoadCookies(); err != nil {
+		t.Fatalf("load persisted cookies failed: %v", err)
+	}
+
+	cookies := loaded.GetCookies()
+	assertCookieNames(t, cookies, []string{"secure"})
+	if !cookies[0].Secure {
+		t.Fatal("loaded cookie Secure = false, want true")
+	}
+	if !cookies[0].HttpOnly {
+		t.Fatal("loaded cookie HttpOnly = false, want true")
 	}
 }
 
@@ -344,3 +466,46 @@ func (s *stubHTTPClient) AddPreRequestHook(_ tls_client.PreRequestHookFunc)     
 func (s *stubHTTPClient) AddPostResponseHook(_ tls_client.PostResponseHookFunc) {}
 func (s *stubHTTPClient) ResetPreHooks()                                        {}
 func (s *stubHTTPClient) ResetPostHooks()                                       {}
+
+func initClientTestLogger(t *testing.T) {
+	t.Helper()
+
+	if err := logger.Init(config.LogConfig{Level: "error"}); err != nil {
+		t.Fatalf("init logger failed: %v", err)
+	}
+	t.Cleanup(logger.Sync)
+}
+
+func newSessionTestClient(t *testing.T, baseURL string) *Client {
+	t.Helper()
+
+	return &Client{
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		cookieFile: t.TempDir() + "/session.json",
+	}
+}
+
+func writeSessionFile(t *testing.T, path string, data interface{}) {
+	t.Helper()
+
+	bytes, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal session data failed: %v", err)
+	}
+	if err := os.WriteFile(path, bytes, 0600); err != nil {
+		t.Fatalf("write session file failed: %v", err)
+	}
+}
+
+func assertCookieNames(t *testing.T, cookies []*http.Cookie, want []string) {
+	t.Helper()
+
+	if len(cookies) != len(want) {
+		t.Fatalf("cookie count = %d, want %d (%v)", len(cookies), len(want), want)
+	}
+	for i, name := range want {
+		if cookies[i].Name != name {
+			t.Fatalf("cookie[%d].Name = %q, want %q", i, cookies[i].Name, name)
+		}
+	}
+}

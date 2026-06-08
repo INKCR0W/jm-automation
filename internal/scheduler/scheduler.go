@@ -154,6 +154,9 @@ func (s *Scheduler) getOrCreateClient(username string) (*client.Client, error) {
 		return nil, fmt.Errorf("创建客户端失败: %w", err)
 	}
 	c.SetBaseURLs(s.baseURLs)
+	if err := c.LoadCookies(); err != nil {
+		logger.Debug("使用完整域名候选重新加载 cookies 失败", "username", username, "error", err)
+	}
 
 	s.clientMap[username] = c
 	logger.Info("为账号创建新的客户端实例", "username", username)

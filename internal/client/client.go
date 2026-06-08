@@ -52,12 +52,14 @@ type Response struct {
 
 // CookieData Cookie 持久化数据结构
 type CookieData struct {
-	Name    string    `json:"name"`
-	Value   string    `json:"value"`
-	Path    string    `json:"path"`
-	Domain  string    `json:"domain"`
-	Expires time.Time `json:"expires"`
-	MaxAge  int       `json:"max_age"`
+	Name     string    `json:"name"`
+	Value    string    `json:"value"`
+	Path     string    `json:"path"`
+	Domain   string    `json:"domain"`
+	Expires  time.Time `json:"expires"`
+	MaxAge   int       `json:"max_age"`
+	Secure   bool      `json:"secure,omitempty"`
+	HTTPOnly bool      `json:"http_only,omitempty"`
 }
 
 // SessionData 会话持久化数据结构（包含 cookies 和用户信息）
@@ -395,12 +397,14 @@ func (c *Client) SaveCookies() error {
 	cookieData := make([]CookieData, 0, len(snapshot.cookies))
 	for _, cookie := range snapshot.cookies {
 		cookieData = append(cookieData, CookieData{
-			Name:    cookie.Name,
-			Value:   cookie.Value,
-			Path:    cookie.Path,
-			Domain:  cookie.Domain,
-			Expires: cookie.Expires,
-			MaxAge:  cookie.MaxAge,
+			Name:     cookie.Name,
+			Value:    cookie.Value,
+			Path:     cookie.Path,
+			Domain:   cookie.Domain,
+			Expires:  cookie.Expires,
+			MaxAge:   cookie.MaxAge,
+			Secure:   cookie.Secure,
+			HTTPOnly: cookie.HttpOnly,
 		})
 	}
 
@@ -426,36 +430,20 @@ func (c *Client) SaveCookies() error {
 
 // LoadCookies 从文件加载 cookies
 func (c *Client) LoadCookies() error {
-	data, err := os.ReadFile(c.cookieFile)
+	data, err := c.readSessionFile()
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // 文件不存在不算错误
-		}
-		return fmt.Errorf("读取会话文件失败: %w", err)
+		return err
+	}
+	if len(data) == 0 {
+		return nil
 	}
 
+	now := time.Now()
+	policy := c.cookieValidationPolicy()
+
 	// 尝试解析为新格式（SessionData）
-	var sessionData SessionData
-	if err := json.Unmarshal(data, &sessionData); err == nil && sessionData.hasData() {
-		// 新格式
-		now := time.Now()
-		validCookies := make([]*http.Cookie, 0)
-		for _, cd := range sessionData.Cookies {
-			// 检查是否过期
-			if !cd.Expires.IsZero() && cd.Expires.Before(now) {
-				continue
-			}
-
-			validCookies = append(validCookies, &http.Cookie{
-				Name:    cd.Name,
-				Value:   cd.Value,
-				Path:    cd.Path,
-				Domain:  cd.Domain,
-				Expires: cd.Expires,
-				MaxAge:  cd.MaxAge,
-			})
-		}
-
+	if sessionData, ok := parseSessionData(data); ok {
+		validCookies := filterValidCookies(sessionData.Cookies, now, policy)
 		c.applySession(validCookies, sessionData.UserID, sessionData.Username, sessionData.JWTToken)
 		logger.Info("加载会话成功", "count", len(validCookies), "user_id", sessionData.UserID, "has_jwt", sessionData.JWTToken != "")
 
@@ -463,36 +451,165 @@ func (c *Client) LoadCookies() error {
 	}
 
 	// 尝试解析为旧格式（[]CookieData）以保持向后兼容
-	var cookieData []CookieData
-	if err := json.Unmarshal(data, &cookieData); err != nil {
+	cookieData, err := parseLegacyCookieData(data)
+	if err != nil {
 		return fmt.Errorf("解析会话文件失败: %w", err)
 	}
 
-	// 转换回 http.Cookie 并过滤过期的
-	now := time.Now()
-	validCookies := make([]*http.Cookie, 0)
-	for _, cd := range cookieData {
-		// 检查是否过期
-		if !cd.Expires.IsZero() && cd.Expires.Before(now) {
-			continue
-		}
-
-		validCookies = append(validCookies, &http.Cookie{
-			Name:    cd.Name,
-			Value:   cd.Value,
-			Path:    cd.Path,
-			Domain:  cd.Domain,
-			Expires: cd.Expires,
-			MaxAge:  cd.MaxAge,
-		})
-	}
-
+	validCookies := filterValidCookies(cookieData, now, policy)
+	c.setCookies(validCookies)
 	if len(validCookies) > 0 {
-		c.setCookies(validCookies)
 		logger.Info("加载 cookies 成功（旧格式）", "count", len(validCookies))
 	}
 
 	return nil
+}
+
+func (c *Client) readSessionFile() ([]byte, error) {
+	data, err := os.ReadFile(c.cookieFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil // 文件不存在不算错误
+		}
+		return nil, fmt.Errorf("读取会话文件失败: %w", err)
+	}
+	return data, nil
+}
+
+func parseSessionData(data []byte) (SessionData, bool) {
+	var sessionData SessionData
+	if err := json.Unmarshal(data, &sessionData); err != nil || !sessionData.hasData() {
+		return SessionData{}, false
+	}
+	return sessionData, true
+}
+
+func parseLegacyCookieData(data []byte) ([]CookieData, error) {
+	var cookieData []CookieData
+	if err := json.Unmarshal(data, &cookieData); err != nil {
+		return nil, err
+	}
+	return cookieData, nil
+}
+
+type cookieValidationPolicy struct {
+	allowedHosts map[string]struct{}
+	hasHTTP      bool
+	hasHTTPS     bool
+}
+
+func (c *Client) cookieValidationPolicy() cookieValidationPolicy {
+	c.sessionMu.RLock()
+	baseURLs := make([]string, 0, len(c.baseURLs)+1)
+	if c.baseURL != "" {
+		baseURLs = append(baseURLs, c.baseURL)
+	}
+	baseURLs = append(baseURLs, c.baseURLs...)
+	c.sessionMu.RUnlock()
+
+	policy := cookieValidationPolicy{
+		allowedHosts: make(map[string]struct{}, len(baseURLs)),
+	}
+	for _, baseURL := range baseURLs {
+		u, ok := parseBaseURL(baseURL)
+		if !ok {
+			continue
+		}
+
+		if host := strings.ToLower(u.Hostname()); host != "" {
+			policy.allowedHosts[host] = struct{}{}
+		}
+		switch strings.ToLower(u.Scheme) {
+		case "http":
+			policy.hasHTTP = true
+		case "https":
+			policy.hasHTTPS = true
+		}
+	}
+
+	return policy
+}
+
+func parseBaseURL(raw string) (*url.URL, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil, false
+	}
+	if !strings.HasPrefix(value, "http://") && !strings.HasPrefix(value, "https://") {
+		value = "https://" + value
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.Hostname() == "" {
+		return nil, false
+	}
+	return u, true
+}
+
+func filterValidCookies(cookieData []CookieData, now time.Time, policy cookieValidationPolicy) []*http.Cookie {
+	validCookies := make([]*http.Cookie, 0, len(cookieData))
+	for _, cd := range cookieData {
+		if !isValidCookieData(cd, now, policy) {
+			continue
+		}
+		validCookies = append(validCookies, cookieDataToHTTPCookie(cd))
+	}
+	return validCookies
+}
+
+func isValidCookieData(cd CookieData, now time.Time, policy cookieValidationPolicy) bool {
+	if !cd.Expires.IsZero() && cd.Expires.Before(now) {
+		return false
+	}
+	if cd.Secure && policy.hasHTTP && !policy.hasHTTPS {
+		return false
+	}
+	return policy.allowsDomain(cd.Domain)
+}
+
+func (p cookieValidationPolicy) allowsDomain(domain string) bool {
+	normalizedDomain, ok := normalizeCookieDomain(domain)
+	if !ok {
+		return false
+	}
+	// LoginData 派生的 AVS cookie、部分上游 Set-Cookie 和旧会话文件可能没有 Domain。
+	// 这类 host-only cookie 持久化后无法还原原始来源 host，只能保守保留以兼容上游登录态。
+	if normalizedDomain == "" {
+		return true
+	}
+	if len(p.allowedHosts) == 0 {
+		return true
+	}
+
+	for host := range p.allowedHosts {
+		if host == normalizedDomain || strings.HasSuffix(host, "."+normalizedDomain) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeCookieDomain(domain string) (string, bool) {
+	normalized := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	if normalized == "" {
+		return "", true
+	}
+	if strings.ContainsAny(normalized, " \t\r\n/\\:") {
+		return "", false
+	}
+	return normalized, true
+}
+
+func cookieDataToHTTPCookie(cd CookieData) *http.Cookie {
+	return &http.Cookie{
+		Name:     cd.Name,
+		Value:    cd.Value,
+		Path:     cd.Path,
+		Domain:   cd.Domain,
+		Expires:  cd.Expires,
+		MaxAge:   cd.MaxAge,
+		Secure:   cd.Secure,
+		HttpOnly: cd.HTTPOnly,
+	}
 }
 
 func (c *Client) SetJWTToken(token string) {
