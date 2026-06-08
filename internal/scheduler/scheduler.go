@@ -17,11 +17,12 @@ import (
 )
 
 type Scheduler struct {
-	cron      *cron.Cron
-	config    *config.Config
-	clientMap map[string]*client.Client
-	baseURLs  []string
-	mu        sync.Mutex
+	cron           *cron.Cron
+	config         *config.Config
+	clientMap      map[string]*client.Client
+	baseURLs       []string
+	delayGenerator func(maxMinutes int) time.Duration
+	mu             sync.Mutex
 }
 
 func New(cfg *config.Config) (*Scheduler, error) {
@@ -42,10 +43,11 @@ func New(cfg *config.Config) (*Scheduler, error) {
 	logger.Info("API 域名候选加载完成", "count", len(baseURLs), "primary", baseURLs[0])
 
 	return &Scheduler{
-		cron:      cronInstance,
-		config:    cfg,
-		clientMap: make(map[string]*client.Client),
-		baseURLs:  baseURLs,
+		cron:           cronInstance,
+		config:         cfg,
+		clientMap:      make(map[string]*client.Client),
+		baseURLs:       baseURLs,
+		delayGenerator: randomDelayDuration,
 	}, nil
 }
 
@@ -86,6 +88,14 @@ func (s *Scheduler) getRandomDelay() time.Duration {
 		return 0
 	}
 
+	generateDelay := s.delayGenerator
+	if generateDelay == nil {
+		generateDelay = randomDelayDuration
+	}
+	return generateDelay(maxMinutes)
+}
+
+func randomDelayDuration(maxMinutes int) time.Duration {
 	// 使用 utils.RandomInt 生成真正的随机分钟数（0 到 maxMinutes 之间）
 	randomMinutes := utils.RandomInt(0, maxMinutes+1)
 	return time.Duration(randomMinutes) * time.Minute

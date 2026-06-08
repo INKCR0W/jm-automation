@@ -134,3 +134,62 @@ func TestUniqueBaseURLsNormalizesAndDeduplicates(t *testing.T) {
 		})
 	}
 }
+
+func TestGetRandomDelayUsesInjectedGenerator(t *testing.T) {
+	randomDelay := 30
+	var gotMaxMinutes int
+	s := &Scheduler{
+		config: &config.Config{
+			Scheduler: config.SchedulerConfig{
+				RandomDelay: &randomDelay,
+			},
+		},
+		delayGenerator: func(maxMinutes int) time.Duration {
+			gotMaxMinutes = maxMinutes
+			return 7 * time.Minute
+		},
+	}
+
+	got := s.getRandomDelay()
+	if got != 7*time.Minute {
+		t.Fatalf("delay = %v, want 7m", got)
+	}
+	if gotMaxMinutes != 30 {
+		t.Fatalf("max minutes passed to generator = %d, want 30", gotMaxMinutes)
+	}
+}
+
+func TestGetRandomDelayReturnsZeroWhenDisabled(t *testing.T) {
+	tests := []struct {
+		name        string
+		randomDelay *int
+	}{
+		{name: "nil random delay"},
+		{name: "zero random delay", randomDelay: intPtr(0)},
+		{name: "negative random delay", randomDelay: intPtr(-1)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Scheduler{
+				config: &config.Config{
+					Scheduler: config.SchedulerConfig{
+						RandomDelay: tt.randomDelay,
+					},
+				},
+				delayGenerator: func(maxMinutes int) time.Duration {
+					t.Fatalf("delay generator should not be called, got maxMinutes=%d", maxMinutes)
+					return time.Minute
+				},
+			}
+
+			if got := s.getRandomDelay(); got != 0 {
+				t.Fatalf("delay = %v, want 0", got)
+			}
+		})
+	}
+}
+
+func intPtr(value int) *int {
+	return &value
+}

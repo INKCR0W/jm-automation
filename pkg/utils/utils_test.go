@@ -100,9 +100,3 @@ func BenchmarkRandomInt(b *testing.B) {
 		RandomInt(0, 100)
 	}
 }
-
-func BenchmarkRandomDelay(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		RandomDelay(1*time.Microsecond, 10*time.Microsecond)
-	}
-}
