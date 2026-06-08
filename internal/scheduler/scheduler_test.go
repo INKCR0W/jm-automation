@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
+	"github.com/INKCR0W/jm-automation/internal/api"
 	"github.com/INKCR0W/jm-automation/internal/client"
 	"github.com/INKCR0W/jm-automation/internal/config"
 	"github.com/INKCR0W/jm-automation/pkg/logger"
@@ -75,5 +77,60 @@ func TestGetOrCreateClientLoadsCookiesAfterBaseURLsAreSet(t *testing.T) {
 	}
 	if cookies[0].Name != "remember" || cookies[0].Value != "fallback-token" {
 		t.Fatalf("cookie = %s=%s, want remember=fallback-token", cookies[0].Name, cookies[0].Value)
+	}
+}
+
+func TestUniqueBaseURLsNormalizesAndDeduplicates(t *testing.T) {
+	tests := []struct {
+		name   string
+		values []string
+		want   []string
+	}{
+		{
+			name: "filters empty values",
+			values: []string{
+				"",
+				"   ",
+				"https://api.example.test",
+			},
+			want: []string{"https://api.example.test"},
+		},
+		{
+			name: "deduplicates after trimming whitespace and trailing slash",
+			values: []string{
+				" https://api.example.test/ ",
+				"https://api.example.test",
+				"https://fallback.example.test///",
+			},
+			want: []string{
+				"https://api.example.test",
+				"https://fallback.example.test",
+			},
+		},
+		{
+			name: "falls back to default base url when all values are empty",
+			values: []string{
+				"",
+				"   ",
+				"////",
+			},
+			want: []string{api.DefaultBaseURL},
+		},
+		{
+			name: "keeps invalid values for backward compatibility",
+			values: []string{
+				" not-a-url/ ",
+			},
+			want: []string{"not-a-url"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := uniqueBaseURLs(tt.values)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("uniqueBaseURLs() = %#v, want %#v", got, tt.want)
+			}
+		})
 	}
 }

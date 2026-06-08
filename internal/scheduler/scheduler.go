@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -168,6 +169,8 @@ func uniqueBaseURLs(values []string) []string {
 	seen := make(map[string]struct{}, len(values))
 	out := make([]string, 0, len(values))
 	for _, value := range values {
+		// 这里只做兼容性规范化，不拒绝非法 URL；配置校验如需收紧，应单独改造 New 的错误返回契约。
+		value = strings.TrimRight(strings.TrimSpace(value), "/")
 		if value == "" {
 			continue
 		}
