@@ -16,6 +16,10 @@
 - 随机延迟
 - Docker 部署
 
+## 致谢
+
+- 签到相关逻辑参考了 [Breeze](https://github.com/deretame/Breeze) 项目的实现思路，特此致谢。
+
 ## 快速开始
 
 ### 下载
