@@ -1,4 +1,4 @@
-# JM Comic Auto
+# jm-automation
 
 [![CI](https://github.com/INKCR0W/jm-automation/actions/workflows/ci.yml/badge.svg)](https://github.com/INKCR0W/jm-automation/actions/workflows/ci.yml)
 [![Release](https://github.com/INKCR0W/jm-automation/actions/workflows/release.yml/badge.svg)](https://github.com/INKCR0W/jm-automation/actions/workflows/release.yml)
@@ -60,13 +60,13 @@ accounts:
 
 ```bash
 # 编译
-go build -o jmcomic-auto cmd/jmcomic-auto/main.go
+go build -o jm-automation cmd/jm-automation/main.go
 
 # 立即执行一次
-./jmcomic-auto -once
+./jm-automation -once
 
 # 启动定时任务
-./jmcomic-auto
+./jm-automation
 ```
 
 ### Docker Compose（推荐）
@@ -101,17 +101,17 @@ docker-compose down
 1. 构建镜像
 
 ```bash
-docker build -t jmcomic-auto .
+docker build -t jm-automation .
 ```
 
 2. 运行容器
 
 ```bash
 docker run -d \
-  --name jmcomic-auto \
+  --name jm-automation \
   -v $(pwd)/config.yaml:/app/config.yaml \
   -v $(pwd)/logs:/app/logs \
-  jmcomic-auto
+  jm-automation
 ```
 
 ## 配置说明
@@ -161,7 +161,7 @@ log:
 ## 命令行参数
 
 ```bash
-./jmcomic-auto -h
+./jm-automation -h
 
   -config string
         配置文件路径 (default "config.yaml")
@@ -175,7 +175,7 @@ log:
 
 ```
 .
-├── cmd/jmcomic-auto/     # 主程序入口
+├── cmd/jm-automation/     # 主程序入口
 ├── internal/
 │   ├── api/              # API 接口
 │   ├── client/           # HTTP 客户端
@@ -196,10 +196,10 @@ log:
 go mod download
 
 # 运行
-go run cmd/jmcomic-auto/main.go -once
+go run cmd/jm-automation/main.go -once
 
 # 编译
-go build -o jmcomic-auto cmd/jmcomic-auto/main.go
+go build -o jm-automation cmd/jm-automation/main.go
 ```
 
 ## License

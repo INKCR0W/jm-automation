@@ -13,8 +13,8 @@
 # 构建产物
 dist/
 *.exe
-jmcomic-auto
-jmcomic-auto-*
+jm-automation
+jm-automation-*
 
 # 测试和覆盖率
 coverage.out

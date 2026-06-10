@@ -20,8 +20,8 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -a -installsuffix cgo \
     -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=${BUILD_TIME}" \
-    -o jmcomic-auto \
-    ./cmd/jmcomic-auto
+    -o jm-automation \
+    ./cmd/jm-automation
 
 # 运行阶段
 FROM alpine:latest
@@ -32,13 +32,13 @@ RUN apk --no-cache add ca-certificates tzdata
 WORKDIR /app
 
 # 从构建阶段复制二进制文件
-COPY --from=builder /app/jmcomic-auto .
+COPY --from=builder /app/jm-automation .
 
 # 创建启动脚本
 RUN echo '#!/bin/sh' > /app/entrypoint.sh && \
     echo 'mkdir -p /app/logs /app/data/cookies' >> /app/entrypoint.sh && \
     echo 'chown -R appuser:appuser /app/logs /app/data' >> /app/entrypoint.sh && \
-    echo 'exec su-exec appuser ./jmcomic-auto "$@"' >> /app/entrypoint.sh && \
+    echo 'exec su-exec appuser ./jm-automation "$@"' >> /app/entrypoint.sh && \
     chmod +x /app/entrypoint.sh
 
 RUN apk add --no-cache su-exec
@@ -50,7 +50,7 @@ RUN addgroup -g 1000 appuser && \
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD pgrep -f jmcomic-auto || exit 1
+    CMD pgrep -f jm-automation || exit 1
 
 # 运行
 CMD ["/app/entrypoint.sh"]

@@ -4,7 +4,7 @@
 *.dll
 *.so
 *.dylib
-jmcomic-auto-*
+jm-automation-*
 
 # Test binary
 *.test

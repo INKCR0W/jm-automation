@@ -1,7 +1,7 @@
 .PHONY: help build build-all clean test lint docker-build docker-push run install
 
 # 变量定义
-BINARY_NAME=jmcomic-auto
+BINARY_NAME=jm-automation
 VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 BUILD_TIME=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 LDFLAGS=-ldflags "-s -w -X main.version=$(VERSION) -X main.buildTime=$(BUILD_TIME)"
@@ -22,7 +22,7 @@ help:
 # 构建当前平台
 build:
 	@echo "构建 $(BINARY_NAME) $(VERSION)..."
-	go build $(LDFLAGS) -o $(BINARY_NAME) cmd/jmcomic-auto/main.go
+	go build $(LDFLAGS) -o $(BINARY_NAME) cmd/jm-automation/main.go
 	@echo "构建完成: $(BINARY_NAME)"
 
 # 构建所有平台
@@ -31,19 +31,19 @@ build-all:
 	@mkdir -p dist
 	
 	# Linux AMD64
-	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o dist/$(BINARY_NAME)-linux-amd64 cmd/jmcomic-auto/main.go
+	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o dist/$(BINARY_NAME)-linux-amd64 cmd/jm-automation/main.go
 	
 	# Linux ARM64
-	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o dist/$(BINARY_NAME)-linux-arm64 cmd/jmcomic-auto/main.go
+	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o dist/$(BINARY_NAME)-linux-arm64 cmd/jm-automation/main.go
 	
 	# Windows AMD64
-	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o dist/$(BINARY_NAME)-windows-amd64.exe cmd/jmcomic-auto/main.go
+	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o dist/$(BINARY_NAME)-windows-amd64.exe cmd/jm-automation/main.go
 	
 	# macOS AMD64
-	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o dist/$(BINARY_NAME)-darwin-amd64 cmd/jmcomic-auto/main.go
+	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o dist/$(BINARY_NAME)-darwin-amd64 cmd/jm-automation/main.go
 	
 	# macOS ARM64
-	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o dist/$(BINARY_NAME)-darwin-arm64 cmd/jmcomic-auto/main.go
+	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o dist/$(BINARY_NAME)-darwin-arm64 cmd/jm-automation/main.go
 	
 	@echo "所有平台构建完成，文件位于 dist/ 目录"
 

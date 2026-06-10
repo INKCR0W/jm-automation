@@ -27,7 +27,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("jmcomic-auto %s (built at %s)\n", version, buildTime)
+		fmt.Printf("jm-automation %s (built at %s)\n", version, buildTime)
 		return
 	}
 

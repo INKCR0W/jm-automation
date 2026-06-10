@@ -1,9 +1,9 @@
 services:
-  jmcomic-auto:
+  jm-automation:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: jmcomic-auto
+    container_name: jm-automation
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./logs:/app/logs

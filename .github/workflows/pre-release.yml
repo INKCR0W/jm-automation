@@ -84,51 +84,51 @@ jobs:
           # Linux AMD64
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
             -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -o dist/jmcomic-auto-linux-amd64 \
-            cmd/jmcomic-auto/main.go
+            -o dist/jm-automation-linux-amd64 \
+            cmd/jm-automation/main.go
           
           # Linux ARM64
           GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build \
             -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -o dist/jmcomic-auto-linux-arm64 \
-            cmd/jmcomic-auto/main.go
+            -o dist/jm-automation-linux-arm64 \
+            cmd/jm-automation/main.go
           
           # Windows AMD64
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build \
             -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -o dist/jmcomic-auto-windows-amd64.exe \
-            cmd/jmcomic-auto/main.go
+            -o dist/jm-automation-windows-amd64.exe \
+            cmd/jm-automation/main.go
           
           # macOS AMD64
           GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build \
             -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -o dist/jmcomic-auto-darwin-amd64 \
-            cmd/jmcomic-auto/main.go
+            -o dist/jm-automation-darwin-amd64 \
+            cmd/jm-automation/main.go
           
           # macOS ARM64
           GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build \
             -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -o dist/jmcomic-auto-darwin-arm64 \
-            cmd/jmcomic-auto/main.go
+            -o dist/jm-automation-darwin-arm64 \
+            cmd/jm-automation/main.go
 
       - name: Create archives
         run: |
           cd dist
           
           # Linux AMD64
-          tar czf jmcomic-auto-linux-amd64.tar.gz jmcomic-auto-linux-amd64
+          tar czf jm-automation-linux-amd64.tar.gz jm-automation-linux-amd64
           
           # Linux ARM64
-          tar czf jmcomic-auto-linux-arm64.tar.gz jmcomic-auto-linux-arm64
+          tar czf jm-automation-linux-arm64.tar.gz jm-automation-linux-arm64
           
           # Windows AMD64
-          zip jmcomic-auto-windows-amd64.zip jmcomic-auto-windows-amd64.exe
+          zip jm-automation-windows-amd64.zip jm-automation-windows-amd64.exe
           
           # macOS AMD64
-          tar czf jmcomic-auto-darwin-amd64.tar.gz jmcomic-auto-darwin-amd64
+          tar czf jm-automation-darwin-amd64.tar.gz jm-automation-darwin-amd64
           
           # macOS ARM64
-          tar czf jmcomic-auto-darwin-arm64.tar.gz jmcomic-auto-darwin-arm64
+          tar czf jm-automation-darwin-arm64.tar.gz jm-automation-darwin-arm64
           
           ls -lh
 
@@ -172,11 +172,11 @@ jobs:
             
             请根据你的操作系统下载对应的文件：
             
-            - **Linux (x64)**: `jmcomic-auto-linux-amd64.tar.gz`
-            - **Linux (ARM64)**: `jmcomic-auto-linux-arm64.tar.gz`
-            - **Windows (x64)**: `jmcomic-auto-windows-amd64.zip`
-            - **macOS (Intel)**: `jmcomic-auto-darwin-amd64.tar.gz`
-            - **macOS (Apple Silicon)**: `jmcomic-auto-darwin-arm64.tar.gz`
+            - **Linux (x64)**: `jm-automation-linux-amd64.tar.gz`
+            - **Linux (ARM64)**: `jm-automation-linux-arm64.tar.gz`
+            - **Windows (x64)**: `jm-automation-windows-amd64.zip`
+            - **macOS (Intel)**: `jm-automation-darwin-amd64.tar.gz`
+            - **macOS (Apple Silicon)**: `jm-automation-darwin-arm64.tar.gz`
             
             ## 使用方法
             

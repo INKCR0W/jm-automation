@@ -64,8 +64,8 @@ jobs:
 
       - name: Build
         run: |
-          go build -v -o jmcomic-auto cmd/jmcomic-auto/main.go
+          go build -v -o jm-automation cmd/jm-automation/main.go
 
       - name: Test binary
         run: |
-          ./jmcomic-auto -version || true
+          ./jm-automation -version || true

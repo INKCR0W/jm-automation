@@ -60,7 +60,7 @@ func fetchHostConfig(ctx context.Context) (string, error) {
 			lastErr = err
 			continue
 		}
-		req.Header.Set("User-Agent", "jmcomic-auto")
+		req.Header.Set("User-Agent", "jm-automation")
 
 		resp, err := httpClient.Do(req)
 		if err != nil {
