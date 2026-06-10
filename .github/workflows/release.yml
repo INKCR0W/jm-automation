@@ -47,7 +47,8 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
-          BINARY_NAME="jm-automation-${{ matrix.goos }}-${{ matrix.goarch }}"
+          PACKAGE_NAME="jm-automation-${{ matrix.goos }}-${{ matrix.goarch }}"
+          BINARY_NAME="jm-automation"
           if [ "${{ matrix.goos }}" = "windows" ]; then
             BINARY_NAME="${BINARY_NAME}.exe"
           fi
@@ -59,9 +60,9 @@ jobs:
           
           # 创建压缩包
           if [ "${{ matrix.goos }}" = "windows" ]; then
-            zip "${BINARY_NAME%.exe}.zip" "${BINARY_NAME}" config.example.yaml README.md LICENSE
+            zip "${PACKAGE_NAME}.zip" "${BINARY_NAME}" config.example.yaml README.md LICENSE
           else
-            tar czf "${BINARY_NAME}.tar.gz" "${BINARY_NAME}" config.example.yaml README.md LICENSE
+            tar czf "${PACKAGE_NAME}.tar.gz" "${BINARY_NAME}" config.example.yaml README.md LICENSE
           fi
 
       - name: Upload artifacts

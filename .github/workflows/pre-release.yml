@@ -82,33 +82,38 @@ jobs:
           mkdir -p dist
           
           # Linux AMD64
+          mkdir -p dist/jm-automation-linux-amd64
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
             -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -o dist/jm-automation-linux-amd64 \
+            -o dist/jm-automation-linux-amd64/jm-automation \
             cmd/jm-automation/main.go
           
           # Linux ARM64
+          mkdir -p dist/jm-automation-linux-arm64
           GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build \
             -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -o dist/jm-automation-linux-arm64 \
+            -o dist/jm-automation-linux-arm64/jm-automation \
             cmd/jm-automation/main.go
           
           # Windows AMD64
+          mkdir -p dist/jm-automation-windows-amd64
           GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build \
             -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -o dist/jm-automation-windows-amd64.exe \
+            -o dist/jm-automation-windows-amd64/jm-automation.exe \
             cmd/jm-automation/main.go
           
           # macOS AMD64
+          mkdir -p dist/jm-automation-darwin-amd64
           GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build \
             -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -o dist/jm-automation-darwin-amd64 \
+            -o dist/jm-automation-darwin-amd64/jm-automation \
             cmd/jm-automation/main.go
           
           # macOS ARM64
+          mkdir -p dist/jm-automation-darwin-arm64
           GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build \
             -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -o dist/jm-automation-darwin-arm64 \
+            -o dist/jm-automation-darwin-arm64/jm-automation \
             cmd/jm-automation/main.go
 
       - name: Create archives
@@ -116,19 +121,19 @@ jobs:
           cd dist
           
           # Linux AMD64
-          tar czf jm-automation-linux-amd64.tar.gz jm-automation-linux-amd64
+          tar czf jm-automation-linux-amd64.tar.gz -C jm-automation-linux-amd64 jm-automation
           
           # Linux ARM64
-          tar czf jm-automation-linux-arm64.tar.gz jm-automation-linux-arm64
+          tar czf jm-automation-linux-arm64.tar.gz -C jm-automation-linux-arm64 jm-automation
           
           # Windows AMD64
-          zip jm-automation-windows-amd64.zip jm-automation-windows-amd64.exe
+          (cd jm-automation-windows-amd64 && zip ../jm-automation-windows-amd64.zip jm-automation.exe)
           
           # macOS AMD64
-          tar czf jm-automation-darwin-amd64.tar.gz jm-automation-darwin-amd64
+          tar czf jm-automation-darwin-amd64.tar.gz -C jm-automation-darwin-amd64 jm-automation
           
           # macOS ARM64
-          tar czf jm-automation-darwin-arm64.tar.gz jm-automation-darwin-arm64
+          tar czf jm-automation-darwin-arm64.tar.gz -C jm-automation-darwin-arm64 jm-automation
           
           ls -lh
 
