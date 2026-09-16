@@ -28,6 +28,7 @@ const (
 	PathLatest         = "/latest"
 	PathSerialization  = "/serialization"
 	PathCategories     = "/categories/filter"
+	PathSetting        = "/setting"
 
 	// 请求头
 	HeaderUserAgent      = "User-Agent"
@@ -46,10 +47,13 @@ const (
 	CodeError   = -1
 )
 
-// API 域名列表（会自动更新）
+// 远程配置拿不到时的兜底
 var DomainAPIList = []string{
 	"www.cdnhjk.net",
-	"www.cdnsha.org",
+	"www.cdngwc.cc",
+	"www.cdngwc.net",
+	"www.cdngwc.club",
+	"www.cdnutc.me",
 }
 
 var HostConfigURLs = []string{

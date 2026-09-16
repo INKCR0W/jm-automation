@@ -22,16 +22,15 @@ func MD5Hex(s string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// TokenAndTokenParam 计算请求头的 token 和 tokenparam
-// ts: 时间戳（秒）
-// version: APP 版本号
-// secret: 密钥（已废弃，保留参数兼容性）
-func TokenAndTokenParam(ts int64, version string, secret ...string) (string, string) {
-	// tokenparam: "1700566805,2.0.13"
-	tokenparam := fmt.Sprintf("%d,%s", ts, version)
+// 业务接口：ts 用毫秒，token = md5(ts + version)
+func TokenAndTokenParam(ts int64, version string) (string, string) {
+	return TokenAndTokenParamWithSeed(ts, version, version)
+}
 
-	// token: md5(ts + version)，与禁漫最新 API 规范保持一致
-	token := MD5Hex(fmt.Sprintf("%d%s", ts, version))
+// /setting 这类接口不一样：ts 用秒，token = md5(ts + AppDataSecret)
+func TokenAndTokenParamWithSeed(ts int64, version, seed string) (string, string) {
+	tokenparam := fmt.Sprintf("%d,%s", ts, version)
+	token := MD5Hex(fmt.Sprintf("%d%s", ts, seed))
 
 	return token, tokenparam
 }

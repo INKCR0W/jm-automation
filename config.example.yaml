@@ -1,5 +1,5 @@
 server:
-  base_url: "https://www.cdnsha.org"
+  base_url: "https://www.cdnhjk.net"
   timeout: 30  # 超时时间（秒）
 
 accounts:

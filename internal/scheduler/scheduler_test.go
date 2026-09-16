@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -192,4 +193,108 @@ func TestGetRandomDelayReturnsZeroWhenDisabled(t *testing.T) {
 
 func intPtr(value int) *int {
 	return &value
+}
+
+func TestRefreshBaseURLsUpdatesExistingClients(t *testing.T) {
+	s := &Scheduler{
+		config: &config.Config{
+			Server: config.ServerConfig{BaseURL: "https://configured.example.net", Timeout: 5},
+		},
+		clientMap: make(map[string]*client.Client),
+		baseURLs:  []string{"https://stale.example.net"},
+		resolveBaseURLs: func(_ context.Context, configuredBaseURL string) api.Resolution {
+			if configuredBaseURL != "https://configured.example.net" {
+				t.Errorf("configuredBaseURL = %q, want the value from config", configuredBaseURL)
+			}
+			return api.Resolution{
+				BaseURLs: []string{"https://fresh.example.net/", "https://backup.example.net"},
+				Remote:   true,
+				Live:     true,
+			}
+		},
+	}
+
+	t.Chdir(t.TempDir())
+	c, err := s.getOrCreateClient("user")
+	if err != nil {
+		t.Fatalf("getOrCreateClient returned error: %v", err)
+	}
+	if got := c.BaseURL(); got != "https://stale.example.net" {
+		t.Fatalf("client base URL = %q, want the stale one before refresh", got)
+	}
+
+	s.refreshBaseURLs(context.Background())
+
+	if got := c.BaseURL(); got != "https://fresh.example.net" {
+		t.Fatalf("client base URL = %q, want https://fresh.example.net", got)
+	}
+	if got := s.baseURLs[0]; got != "https://fresh.example.net" {
+		t.Fatalf("scheduler primary = %q, want https://fresh.example.net", got)
+	}
+}
+
+func TestRefreshBaseURLsKeepsPreviousWhenUnchanged(t *testing.T) {
+	calls := 0
+	s := &Scheduler{
+		config:    &config.Config{Server: config.ServerConfig{Timeout: 5}},
+		clientMap: make(map[string]*client.Client),
+		baseURLs:  []string{"https://a.example.net", "https://b.example.net"},
+		resolveBaseURLs: func(_ context.Context, _ string) api.Resolution {
+			calls++
+			return api.Resolution{
+				BaseURLs: []string{"https://a.example.net", "https://b.example.net"},
+				Remote:   true,
+			}
+		},
+	}
+
+	s.refreshBaseURLs(context.Background())
+
+	if calls != 1 {
+		t.Fatalf("resolve calls = %d, want 1", calls)
+	}
+	if len(s.baseURLs) != 2 || s.baseURLs[0] != "https://a.example.net" {
+		t.Fatalf("baseURLs = %v, want unchanged", s.baseURLs)
+	}
+}
+
+func TestRefreshBaseURLsKeepsPreviousOnDegradedResolution(t *testing.T) {
+	previous := []string{"https://resolved-a.example.net", "https://resolved-b.example.net"}
+	s := &Scheduler{
+		config:    &config.Config{Server: config.ServerConfig{Timeout: 5}},
+		clientMap: make(map[string]*client.Client),
+		baseURLs:  previous,
+		resolveBaseURLs: func(_ context.Context, _ string) api.Resolution {
+			return api.Resolution{BaseURLs: []string{"https://builtin.example.net"}}
+		},
+	}
+
+	t.Chdir(t.TempDir())
+	c, err := s.getOrCreateClient("user")
+	if err != nil {
+		t.Fatalf("getOrCreateClient returned error: %v", err)
+	}
+
+	s.refreshBaseURLs(context.Background())
+
+	if len(s.baseURLs) != 2 || s.baseURLs[0] != previous[0] {
+		t.Fatalf("baseURLs = %v, want %v unchanged", s.baseURLs, previous)
+	}
+	if got := c.BaseURL(); got != previous[0] {
+		t.Fatalf("client base URL = %q, want %q", got, previous[0])
+	}
+}
+
+func TestRefreshBaseURLsIsNoOpWithoutResolver(t *testing.T) {
+	s := &Scheduler{
+		config:    &config.Config{Server: config.ServerConfig{Timeout: 5}},
+		clientMap: make(map[string]*client.Client),
+		baseURLs:  []string{"https://a.example.net"},
+	}
+
+	s.refreshBaseURLs(context.Background())
+
+	if len(s.baseURLs) != 1 || s.baseURLs[0] != "https://a.example.net" {
+		t.Fatalf("baseURLs = %v, want unchanged", s.baseURLs)
+	}
 }

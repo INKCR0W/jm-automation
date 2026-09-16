@@ -17,12 +17,13 @@ import (
 )
 
 type Scheduler struct {
-	cron           *cron.Cron
-	config         *config.Config
-	clientMap      map[string]*client.Client
-	baseURLs       []string
-	delayGenerator func(maxMinutes int) time.Duration
-	mu             sync.Mutex
+	cron            *cron.Cron
+	config          *config.Config
+	clientMap       map[string]*client.Client
+	baseURLs        []string
+	delayGenerator  func(maxMinutes int) time.Duration
+	resolveBaseURLs func(ctx context.Context, configuredBaseURL string) api.Resolution
+	mu              sync.Mutex
 }
 
 func New(cfg *config.Config) (*Scheduler, error) {
@@ -35,20 +36,63 @@ func New(cfg *config.Config) (*Scheduler, error) {
 	// 创建定时任务，设置时区
 	cronInstance := cron.New(cron.WithSeconds(), cron.WithLocation(loc))
 
-	baseURLs := api.ResolveDynamicBaseURLs(context.Background())
-	if cfg.Server.BaseURL != "" {
-		baseURLs = append([]string{cfg.Server.BaseURL}, baseURLs...)
-	}
-	baseURLs = uniqueBaseURLs(baseURLs)
+	baseURLs := uniqueBaseURLs(api.Resolve(context.Background(), cfg.Server.BaseURL).BaseURLs)
 	logger.Info("API 域名候选加载完成", "count", len(baseURLs), "primary", baseURLs[0])
 
 	return &Scheduler{
-		cron:           cronInstance,
-		config:         cfg,
-		clientMap:      make(map[string]*client.Client),
-		baseURLs:       baseURLs,
-		delayGenerator: randomDelayDuration,
+		cron:            cronInstance,
+		config:          cfg,
+		clientMap:       make(map[string]*client.Client),
+		baseURLs:        baseURLs,
+		delayGenerator:  randomDelayDuration,
+		resolveBaseURLs: api.Resolve,
 	}, nil
+}
+
+// 老域名会陆续下线、远程配置里会放新的，只在启动时解析一次的话
+// 常驻几个月后候选会慢慢全失效，最后只能靠重启救
+func (s *Scheduler) refreshBaseURLs(ctx context.Context) {
+	s.mu.Lock()
+	resolve := s.resolveBaseURLs
+	s.mu.Unlock()
+
+	if resolve == nil {
+		return
+	}
+
+	resolution := resolve(ctx, s.config.Server.BaseURL)
+	// 这轮啥都没查出来，手里那份比内置兜底靠谱，别覆盖
+	if resolution.Degraded() {
+		logger.Warn("域名解析未取得有效结果，沿用现有候选")
+		return
+	}
+
+	baseURLs := uniqueBaseURLs(resolution.BaseURLs)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if equalBaseURLs(s.baseURLs, baseURLs) {
+		return
+	}
+
+	logger.Info("API 域名候选已更新", "count", len(baseURLs), "primary", baseURLs[0])
+	s.baseURLs = baseURLs
+	for _, c := range s.clientMap {
+		c.SetBaseURLs(baseURLs)
+	}
+}
+
+func equalBaseURLs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Scheduler) Start(ctx context.Context) error {
@@ -108,6 +152,8 @@ func (s *Scheduler) Stop() {
 }
 
 func (s *Scheduler) RunOnce(ctx context.Context) error {
+	s.refreshBaseURLs(ctx)
+
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(s.config.Accounts))
 
