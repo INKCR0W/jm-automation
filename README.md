@@ -19,6 +19,7 @@
 ## 致谢
 
 - 签到相关逻辑参考了 [Breeze](https://github.com/deretame/Breeze) 项目的实现思路，特此致谢。
+- 接口签名与域名探活逻辑参考了 [JMComic-qt](https://github.com/tonquer/JMComic-qt) 项目，特此致谢。
 
 ## 快速开始
 
