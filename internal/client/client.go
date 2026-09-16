@@ -25,6 +25,9 @@ const (
 	CodeError   = -1
 )
 
+// 上游 header 超过 8K 左右就直接返回 400 HTML，正常会话才几百字节，这里留够余量兜底
+const maxCookieHeaderBytes = 4096
+
 // 加密响应结构
 type EncryptedResponse struct {
 	Code int    `json:"code"`
@@ -70,7 +73,7 @@ type SessionData struct {
 	JWTToken string       `json:"jwt_token,omitempty"`
 }
 
-func New(baseURL string, timeout time.Duration, username string) (*Client, error) {
+func newTLSClient(timeout time.Duration) (tls_client.HttpClient, error) {
 	options := []tls_client.HttpClientOption{
 		tls_client.WithTimeoutSeconds(int(timeout.Seconds())),
 		tls_client.WithClientProfile(profiles.Chrome_144),
@@ -79,6 +82,14 @@ func New(baseURL string, timeout time.Duration, username string) (*Client, error
 	httpClient, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(), options...)
 	if err != nil {
 		return nil, fmt.Errorf("创建 HTTP 客户端失败: %w", err)
+	}
+	return httpClient, nil
+}
+
+func New(baseURL string, timeout time.Duration, username string) (*Client, error) {
+	httpClient, err := newTLSClient(timeout)
+	if err != nil {
+		return nil, err
 	}
 
 	cookieDir := "data/cookies"
@@ -103,6 +114,20 @@ func New(baseURL string, timeout time.Duration, username string) (*Client, error
 	}
 
 	return client, nil
+}
+
+// 不落盘的临时 client，探活得跟业务请求同一套 TLS 指纹，否则探通了照样可能被拦
+func NewEphemeral(baseURL string, timeout time.Duration) (*Client, error) {
+	httpClient, err := newTLSClient(timeout)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Client{
+		httpClient: httpClient,
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		timeout:    timeout,
+	}, nil
 }
 
 func (c *Client) SetBaseURLs(baseURLs []string) {
@@ -259,7 +284,7 @@ func (c *Client) executeRequestOnce(ctx context.Context, opts requestOptions) (*
 	}
 
 	// 添加 cookies
-	for _, cookie := range c.cookieSnapshot() {
+	for _, cookie := range cappedCookies(c.cookieSnapshot()) {
 		req.AddCookie(cookie)
 	}
 
@@ -370,7 +395,7 @@ func looksLikeHTML(resp *Response) bool {
 
 func (c *Client) SetCookies(cookies []*http.Cookie) {
 	c.sessionMu.Lock()
-	c.cookies = cloneCookies(cookies)
+	c.cookies = mergeCookies(nil, cookies)
 	c.sessionMu.Unlock()
 
 	// 自动保存 cookies
@@ -388,6 +413,10 @@ func (c *Client) GetCookies() []*http.Cookie {
 
 // SaveCookies 保存 cookies 到文件
 func (c *Client) SaveCookies() error {
+	if c.cookieFile == "" {
+		return nil
+	}
+
 	snapshot := c.sessionSnapshot()
 	if len(snapshot.cookies) == 0 && snapshot.jwtToken == "" && snapshot.userID == "" && snapshot.username == "" {
 		return nil
@@ -466,6 +495,10 @@ func (c *Client) LoadCookies() error {
 }
 
 func (c *Client) readSessionFile() ([]byte, error) {
+	if c.cookieFile == "" {
+		return nil, nil
+	}
+
 	data, err := os.ReadFile(c.cookieFile)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -553,7 +586,8 @@ func filterValidCookies(cookieData []CookieData, now time.Time, policy cookieVal
 		}
 		validCookies = append(validCookies, cookieDataToHTTPCookie(cd))
 	}
-	return validCookies
+	// 老版本会话文件里塞了一堆重复 cookie，加载时顺手合掉
+	return mergeCookies(nil, validCookies)
 }
 
 func isValidCookieData(cd CookieData, now time.Time, policy cookieValidationPolicy) bool {
@@ -698,24 +732,144 @@ func (c *Client) setCookies(cookies []*http.Cookie) {
 	c.sessionMu.Lock()
 	defer c.sessionMu.Unlock()
 
-	c.cookies = cloneCookies(cookies)
+	c.cookies = mergeCookies(nil, cookies)
 }
 
 func (c *Client) appendCookies(cookies []*http.Cookie) {
 	c.sessionMu.Lock()
 	defer c.sessionMu.Unlock()
 
-	c.cookies = append(c.cookies, cloneCookies(cookies)...)
+	c.cookies = mergeCookies(c.cookies, cookies)
 }
 
 func (c *Client) applySession(cookies []*http.Cookie, userID, username, jwtToken string) {
 	c.sessionMu.Lock()
 	defer c.sessionMu.Unlock()
 
-	c.cookies = cloneCookies(cookies)
+	c.cookies = mergeCookies(nil, cookies)
 	c.userID = userID
 	c.username = username
 	c.jwtToken = jwtToken
+}
+
+// 按 RFC 6265 (name, domain, path) 一样就是同一个 cookie，其中空 path 等价于 "/"
+// 不归一化的话服务端下发的 AVS 和登录响应里自己造的 AVS 会并存
+func cookieKey(cookie *http.Cookie) string {
+	return strings.ToLower(strings.TrimPrefix(cookie.Domain, ".")) + ";" +
+		normalizeCookiePath(cookie.Path) + ";" + cookie.Name
+}
+
+func normalizeCookiePath(path string) string {
+	if path == "" {
+		return "/"
+	}
+	return path
+}
+
+func isDeletionCookie(cookie *http.Cookie, now time.Time) bool {
+	if cookie.MaxAge < 0 {
+		return true
+	}
+	// MaxAge 优先于 Expires，过期时间再早也不算删
+	if cookie.MaxAge > 0 {
+		return false
+	}
+	return !cookie.Expires.IsZero() && !cookie.Expires.After(now)
+}
+
+// 上游每次响应都重发 remember 这类 200 多字节的 cookie，一路追加下去
+// Cookie 头会越滚越大，超过服务端上限后所有请求都变成 400 HTML
+func mergeCookies(existing, incoming []*http.Cookie) []*http.Cookie {
+	now := time.Now()
+
+	merged := make([]*http.Cookie, 0, len(existing)+len(incoming))
+	index := make(map[string]int, len(existing)+len(incoming))
+	for _, cookie := range cloneCookies(existing) {
+		key := cookieKey(cookie)
+		if pos, ok := index[key]; ok {
+			merged[pos] = cookie
+			continue
+		}
+		index[key] = len(merged)
+		merged = append(merged, cookie)
+	}
+
+	for _, cookie := range cloneCookies(incoming) {
+		key := cookieKey(cookie)
+		pos, exists := index[key]
+
+		if isDeletionCookie(cookie, now) {
+			if exists {
+				merged[pos] = nil
+			}
+			continue
+		}
+
+		if exists {
+			merged[pos] = cookie
+			continue
+		}
+		index[key] = len(merged)
+		merged = append(merged, cookie)
+	}
+
+	out := make([]*http.Cookie, 0, len(merged))
+	for _, cookie := range merged {
+		if cookie != nil {
+			out = append(out, cookie)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// 登录态靠这几个 cookie，宁可超一点也不能丢
+var essentialCookieNames = map[string]struct{}{
+	"AVS":         {},
+	"remember":    {},
+	"remember_id": {},
+}
+
+func cookieSize(cookie *http.Cookie) int {
+	// name=value 再加上 "; "
+	return len(cookie.Name) + len(cookie.Value) + 3
+}
+
+func cappedCookies(cookies []*http.Cookie) []*http.Cookie {
+	total := 0
+	for _, cookie := range cookies {
+		total += cookieSize(cookie)
+	}
+	if total <= maxCookieHeaderBytes {
+		return cookies
+	}
+
+	budget := maxCookieHeaderBytes
+	for _, cookie := range cookies {
+		if _, ok := essentialCookieNames[cookie.Name]; ok {
+			budget -= cookieSize(cookie)
+		}
+	}
+
+	kept := make([]*http.Cookie, 0, len(cookies))
+	for _, cookie := range cookies {
+		if _, ok := essentialCookieNames[cookie.Name]; ok {
+			kept = append(kept, cookie)
+			continue
+		}
+		size := cookieSize(cookie)
+		if size > budget {
+			continue
+		}
+		budget -= size
+		kept = append(kept, cookie)
+	}
+
+	logger.Warn("Cookie 请求头超出上限，已丢弃非必要 cookie",
+		"kept", len(kept), "dropped", len(cookies)-len(kept), "limit_bytes", maxCookieHeaderBytes)
+	return kept
 }
 
 func cloneCookies(cookies []*http.Cookie) []*http.Cookie {

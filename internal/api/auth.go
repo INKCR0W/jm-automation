@@ -130,6 +130,7 @@ func (a *AuthAPI) applyLoginSession(loginData LoginData) {
 	cookie := &http.Cookie{
 		Name:  "AVS",
 		Value: a.avs,
+		Path:  "/",
 	}
 
 	allCookies := a.client.GetCookies()
