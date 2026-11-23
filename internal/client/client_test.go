@@ -501,6 +501,7 @@ func (s *stubHTTPClient) GetProxy() string                        { return "" }
 func (s *stubHTTPClient) SetFollowRedirect(_ bool)                {}
 func (s *stubHTTPClient) GetFollowRedirect() bool                 { return false }
 func (s *stubHTTPClient) CloseIdleConnections()                   {}
+func (s *stubHTTPClient) Close()                                  {}
 func (s *stubHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	if req == nil {
 		return nil, errors.New("request is nil")
