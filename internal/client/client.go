@@ -236,7 +236,7 @@ func (c *Client) Post(ctx context.Context, path string, body interface{}, header
 }
 
 func (c *Client) doRequestRaw(ctx context.Context, method, path, body string, headers map[string]string) (*Response, error) {
-	return c.doWithBaseURLFallback(func(baseURL string) (*Response, error) {
+	return c.doWithBaseURLFallback(method, func(baseURL string) (*Response, error) {
 		return c.doRequestRawOnce(ctx, method, baseURL, path, body, headers)
 	})
 }
@@ -381,12 +381,12 @@ func (c *Client) checkRedirect(req *http.Request, via []*http.Request) error {
 }
 
 func (c *Client) doRequest(ctx context.Context, method, path string, body interface{}, headers map[string]string) (*Response, error) {
-	return c.doWithBaseURLFallback(func(baseURL string) (*Response, error) {
+	return c.doWithBaseURLFallback(method, func(baseURL string) (*Response, error) {
 		return c.doRequestOnce(ctx, method, baseURL, path, body, headers)
 	})
 }
 
-func (c *Client) doWithBaseURLFallback(execute func(baseURL string) (*Response, error)) (*Response, error) {
+func (c *Client) doWithBaseURLFallback(method string, execute func(baseURL string) (*Response, error)) (*Response, error) {
 	baseURLs := c.requestBaseURLs()
 	var lastResp *Response
 	var lastErr error
@@ -397,18 +397,28 @@ func (c *Client) doWithBaseURLFallback(execute func(baseURL string) (*Response, 
 			lastErr = err
 			continue
 		}
-		if !looksLikeHTML(resp) {
+		if method == http.MethodGet && isGatewayFailure(resp.StatusCode) {
+			logger.Debug("API 网关暂不可用", "status", resp.StatusCode, "base_url", baseURL)
+		} else if !looksLikeHTML(resp) {
 			c.setBaseURL(baseURL)
 			return resp, nil
 		}
 		lastResp = resp
-		lastErr = fmt.Errorf("服务器返回 HTML (status=%d, base_url=%s)", resp.StatusCode, baseURL)
 	}
 
 	if lastResp != nil {
 		return lastResp, nil
 	}
 	return nil, lastErr
+}
+
+func isGatewayFailure(status int) bool {
+	switch status {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *Client) doRequestOnce(ctx context.Context, method, baseURL, path string, body interface{}, headers map[string]string) (*Response, error) {
