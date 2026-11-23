@@ -1,6 +1,6 @@
 module github.com/INKCR0W/jm-automation
 
-go 1.26.0
+go 1.27
 
 require (
 	github.com/bogdanfinn/fhttp v0.6.9

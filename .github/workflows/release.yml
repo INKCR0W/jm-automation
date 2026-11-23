@@ -35,7 +35,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26'
+          go-version: '1.27'
 
       - name: Get version
         id: version
@@ -131,6 +131,8 @@ jobs:
             - **macOS (Intel)**: `jm-automation-darwin-amd64.tar.gz`
             - **macOS (Apple Silicon)**: `jm-automation-darwin-arm64.tar.gz`
             
+            macOS 二进制需要 macOS 13 或以上版本。
+
             ## 使用方法
             
             1. 下载并解压对应平台的文件
