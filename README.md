@@ -26,10 +26,10 @@
 ### 下载
 
 #### 稳定版本（推荐）
-访问 [Releases](https://github.com/INKCR0W/jm-automation/releases) 页面下载最新的稳定版本。
+下载[最新稳定版本](https://github.com/INKCR0W/jm-automation/releases/latest)。
 
 #### 开发版本
-如果你想体验最新功能，可以下载 [Pre-release](https://github.com/INKCR0W/jm-automation/releases/tag/pre-release) 版本（每次代码更新后自动构建）。
+从[开发版本下载页](https://github.com/INKCR0W/jm-automation/releases/tag/development-builds)下载最近一次成功发布的 main 构建。新入口首次发布前，可以下载[旧版预发布](https://github.com/INKCR0W/jm-automation/releases/tag/pre-release)。
 
 ### 本地运行
 
