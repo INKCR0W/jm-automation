@@ -83,35 +83,35 @@ jobs:
           
           # Linux AMD64
           mkdir -p dist/jm-automation-linux-amd64
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build \
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags timetzdata \
             -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -o dist/jm-automation-linux-amd64/jm-automation \
             cmd/jm-automation/main.go
           
           # Linux ARM64
           mkdir -p dist/jm-automation-linux-arm64
-          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build \
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags timetzdata \
             -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -o dist/jm-automation-linux-arm64/jm-automation \
             cmd/jm-automation/main.go
           
           # Windows AMD64
           mkdir -p dist/jm-automation-windows-amd64
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build \
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags timetzdata \
             -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -o dist/jm-automation-windows-amd64/jm-automation.exe \
             cmd/jm-automation/main.go
           
           # macOS AMD64
           mkdir -p dist/jm-automation-darwin-amd64
-          GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build \
+          GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -tags timetzdata \
             -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -o dist/jm-automation-darwin-amd64/jm-automation \
             cmd/jm-automation/main.go
           
           # macOS ARM64
           mkdir -p dist/jm-automation-darwin-arm64
-          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build \
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -tags timetzdata \
             -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -o dist/jm-automation-darwin-arm64/jm-automation \
             cmd/jm-automation/main.go
