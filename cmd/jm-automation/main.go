@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -78,13 +79,29 @@ func run() int {
 		return 1
 	}
 
-	logger.Info("调度器已启动，等待执行...")
-
-	// 等待退出信号
+	readyFile := os.Getenv("JM_SCHEDULER_READY_FILE")
+	exitCode := 0
+	if readyFile != "" && ctx.Err() == nil {
+		if err := os.WriteFile(readyFile, nil, 0600); err != nil {
+			logger.Error("写入调度器就绪标记失败", "error", err)
+			exitCode = 1
+			stopSignals()
+		}
+	}
+	if ctx.Err() == nil {
+		logger.Info("调度器已启动，等待执行...")
+	}
 	<-ctx.Done()
 	stopSignals()
-	logger.Info("收到退出信号，正在关闭...")
+
+	if readyFile != "" {
+		if err := os.Remove(readyFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+			logger.Error("清理调度器就绪标记失败", "error", err)
+			exitCode = 1
+		}
+	}
+	logger.Info("正在关闭调度器...")
 	sched.Stop()
 	logger.Info("程序已退出")
-	return 0
+	return exitCode
 }

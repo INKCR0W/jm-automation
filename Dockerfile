@@ -36,9 +36,10 @@ COPY --from=builder /app/jm-automation .
 
 # 创建启动脚本
 RUN echo '#!/bin/sh' > /app/entrypoint.sh && \
+    echo 'rm -f /app/.ready || exit 1' >> /app/entrypoint.sh && \
     echo 'mkdir -p /app/logs /app/data/cookies' >> /app/entrypoint.sh && \
     echo 'chown -R appuser:appuser /app/logs /app/data' >> /app/entrypoint.sh && \
-    echo 'exec su-exec appuser ./jm-automation "$@"' >> /app/entrypoint.sh && \
+    echo 'exec su-exec appuser env JM_SCHEDULER_READY_FILE=/app/.ready /app/jm-automation "$@"' >> /app/entrypoint.sh && \
     chmod +x /app/entrypoint.sh
 
 RUN apk add --no-cache su-exec
@@ -50,8 +51,8 @@ RUN addgroup -g 1000 appuser && \
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD ["pgrep", "-x", "jm-automation"]
+    CMD test -f /app/.ready
 
 # 运行
-CMD ["/app/entrypoint.sh"]
+ENTRYPOINT ["/app/entrypoint.sh"]
 

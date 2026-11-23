@@ -89,8 +89,76 @@ jobs:
       - name: Build image
         run: docker build --platform linux/${{ matrix.arch }} --build-arg VERSION=ci -t jm-automation:ci .
 
-      - name: Test image
+      - name: Check image version
         run: |
-          version=$(docker run --rm --network none --entrypoint /app/entrypoint.sh jm-automation:ci -version)
+          version=$(docker run --rm --network none jm-automation:ci -version)
           printf '%s\n' "$version"
           test "$version" = 'jm-automation ci (built at unknown)'
+
+      - name: Check offline scheduler lifecycle
+        run: |
+          config_dir=$(mktemp -d)
+          container=
+          cleanup() {
+            local result=$?
+            if [ -n "$container" ]; then
+              docker logs "$container" || true
+              docker rm -f "$container" || result=1
+            fi
+            rm -f "$config_dir/config.yaml" || result=1
+            rmdir "$config_dir" || result=1
+            exit "$result"
+          }
+          trap cleanup EXIT
+
+          # Hold config loading open while checking the running process.
+          chmod 0755 "$config_dir"
+          mkfifo -m 0644 "$config_dir/config.yaml"
+          container=$(docker run -d --network none \
+            --mount "type=bind,source=$config_dir,target=/ci,readonly" \
+            --health-interval 1s --health-start-period 0s --health-retries 1 \
+            jm-automation:ci -config /ci/config.yaml)
+
+          wait_for_scheduler_process() {
+            for _ in {1..30}; do
+              if [ "$(docker exec "$container" cat /proc/1/comm)" = jm-automation ]; then
+                return 0
+              fi
+              sleep 1
+            done
+            printf 'Expected jm-automation at PID 1\n' >&2
+            return 1
+          }
+
+          wait_for_health() {
+            local expected=$1 status
+            for _ in {1..60}; do
+              status=$(docker inspect --format '{{.State.Status}} {{.State.Health.Status}}' "$container")
+              case "$status" in
+                "running $expected") return 0 ;;
+                running\ *) sleep 1 ;;
+                *) break ;;
+              esac
+            done
+            printf 'Expected running %s, got %s\n' "$expected" "$status" >&2
+            return 1
+          }
+
+          wait_for_scheduler_process
+          # Run a fresh probe after exec so an earlier failure cannot mask a regression.
+          test "$(docker inspect --format '{{index .Config.Healthcheck.Test 0}}' "$container")" = CMD-SHELL
+          probe=$(docker inspect --format '{{index .Config.Healthcheck.Test 1}}' "$container")
+          probe_status=$(docker exec "$container" /bin/sh -c '/bin/sh -c "$1" >&2; printf "%s\n" "$?"' sh "$probe")
+          printf 'Health probe exit code before config: %s\n' "$probe_status"
+          test "$probe_status" = 1
+          wait_for_health unhealthy
+          timeout 10s tee "$config_dir/config.yaml" >/dev/null <<'YAML'
+          accounts: []
+          scheduler:
+            cron: "0 0 9 * * *"
+            timezone: UTC
+          YAML
+          wait_for_health healthy
+
+          docker stop -t 10 "$container"
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$container")" = 0
