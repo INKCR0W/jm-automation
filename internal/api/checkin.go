@@ -116,16 +116,24 @@ func (a *CheckInAPI) PerformCheckIn(ctx context.Context) error {
 	var err error
 
 	for retryCount := 1; retryCount <= maxRetries; retryCount++ {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		dailyList, err = a.GetDailyList(ctx)
 		if err == nil {
 			break
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
 		}
 
 		logger.Error("获取任务列表失败", "retry", retryCount, "max_retries", maxRetries, "error", err)
 		if retryCount < maxRetries {
 			backoff := time.Duration(5<<(retryCount-1)) * time.Second
 			logger.Info("等待重试", "backoff", backoff)
-			time.Sleep(backoff)
+			if waitErr := utils.Wait(ctx, backoff); waitErr != nil {
+				return waitErr
+			}
 			continue
 		}
 		return fmt.Errorf("获取任务列表失败（已重试%d次）: %w", maxRetries, err)
@@ -144,7 +152,9 @@ func (a *CheckInAPI) PerformCheckIn(ctx context.Context) error {
 
 	logger.Info("准备签到", "task_id", lastTask.ID, "year", lastTask.Year, "month", lastTask.Month)
 
-	utils.RandomDelay(500*time.Millisecond, 3*time.Second)
+	if err := utils.RandomDelay(ctx, 500*time.Millisecond, 3*time.Second); err != nil {
+		return err
+	}
 
 	for retryCount := 1; retryCount <= maxRetries; retryCount++ {
 		result, err := a.DailyCheckIn(ctx, lastTask.ID)
@@ -154,12 +164,17 @@ func (a *CheckInAPI) PerformCheckIn(ctx context.Context) error {
 			}
 			return nil
 		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 
 		logger.Error("签到失败", "retry", retryCount, "max_retries", maxRetries, "error", err)
 		if retryCount < maxRetries {
 			backoff := time.Duration(1<<(retryCount-1)) * time.Second
 			logger.Info("等待重试", "backoff", backoff)
-			time.Sleep(backoff)
+			if waitErr := utils.Wait(ctx, backoff); waitErr != nil {
+				return waitErr
+			}
 			continue
 		}
 		return fmt.Errorf("签到失败（已重试%d次）: %w", maxRetries, err)

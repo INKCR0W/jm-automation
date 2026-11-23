@@ -29,16 +29,24 @@ func (e *Executor) Execute(ctx context.Context, account config.Account) error {
 
 	authAPI := api.NewAuthAPI(e.client)
 	for retryCount := 1; retryCount <= maxLoginRetries; retryCount++ {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		loginData, err = authAPI.Login(ctx, account.Username, account.Password)
 		if err == nil {
 			break
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
 		}
 
 		logger.Error("登录失败", "retry", retryCount, "max_retries", maxLoginRetries, "error", err)
 		if retryCount < maxLoginRetries {
 			backoff := time.Duration(1<<(retryCount-1)) * time.Second
 			logger.Info("等待重试", "backoff", backoff)
-			time.Sleep(backoff)
+			if waitErr := utils.Wait(ctx, backoff); waitErr != nil {
+				return waitErr
+			}
 			continue
 		}
 		return fmt.Errorf("登录失败（已重试%d次）: %w", maxLoginRetries, err)
@@ -46,7 +54,9 @@ func (e *Executor) Execute(ctx context.Context, account config.Account) error {
 
 	logger.Info("登录成功", "username", account.Username, "uid", loginData.UID, "level", loginData.Level)
 
-	utils.RandomDelay(1*time.Second, 3*time.Second)
+	if err := utils.RandomDelay(ctx, 1*time.Second, 3*time.Second); err != nil {
+		return err
+	}
 
 	checkInAPI := api.NewCheckInAPI(e.client, authAPI.GetUserID())
 	if err := checkInAPI.PerformCheckIn(ctx); err != nil {

@@ -7,12 +7,14 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/INKCR0W/jm-automation/internal/api"
 	"github.com/INKCR0W/jm-automation/internal/client"
 	"github.com/INKCR0W/jm-automation/internal/config"
 	"github.com/INKCR0W/jm-automation/pkg/logger"
+	"github.com/robfig/cron/v3"
 )
 
 func TestGetOrCreateClientLoadsCookiesAfterBaseURLsAreSet(t *testing.T) {
@@ -297,4 +299,126 @@ func TestRefreshBaseURLsIsNoOpWithoutResolver(t *testing.T) {
 	if len(s.baseURLs) != 1 || s.baseURLs[0] != "https://a.example.net" {
 		t.Fatalf("baseURLs = %v, want unchanged", s.baseURLs)
 	}
+}
+
+func TestStopCancelsScheduledDelay(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		delayStarted := make(chan struct{}, 1)
+		s := &Scheduler{
+			cron: cron.New(),
+			config: &config.Config{Scheduler: config.SchedulerConfig{
+				Cron:        "@every 1s",
+				RandomDelay: intPtr(1),
+			}},
+			delayGenerator: func(int) time.Duration {
+				delayStarted <- struct{}{}
+				return time.Minute
+			},
+			resolveBaseURLs: func(context.Context, string) api.Resolution {
+				t.Error("resolver ran after the scheduler context was canceled")
+				return api.Resolution{}
+			},
+		}
+		if err := s.Start(ctx); err != nil {
+			t.Fatal(err)
+		}
+		<-delayStarted
+		synctest.Wait()
+
+		start := time.Now()
+		cancel()
+		s.Stop()
+		if elapsed := time.Since(start); elapsed != 0 {
+			t.Errorf("stop waited %v for a canceled job", elapsed)
+		}
+	})
+}
+
+func TestStopWaitsForActiveJob(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		jobStarted := make(chan struct{})
+		jobCanceled := make(chan struct{})
+		jobCanFinish := make(chan struct{})
+		s := &Scheduler{
+			cron:   cron.New(),
+			config: &config.Config{Scheduler: config.SchedulerConfig{Cron: "@every 1s"}},
+			resolveBaseURLs: func(ctx context.Context, _ string) api.Resolution {
+				close(jobStarted)
+				<-ctx.Done()
+				close(jobCanceled)
+				<-jobCanFinish
+				return api.Resolution{}
+			},
+		}
+		if err := s.Start(ctx); err != nil {
+			t.Fatal(err)
+		}
+		<-jobStarted
+
+		cancel()
+		stopped := make(chan struct{})
+		go func() {
+			s.Stop()
+			close(stopped)
+		}()
+		<-jobCanceled
+		synctest.Wait()
+		select {
+		case <-stopped:
+			t.Error("stop returned before the active job finished")
+		default:
+		}
+
+		close(jobCanFinish)
+		<-stopped
+	})
+}
+
+func TestScheduledJobsDoNotOverlap(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		jobStarted := make(chan struct{}, 2)
+		jobCanFinish := make(chan struct{})
+		s := &Scheduler{
+			cron:   cron.New(),
+			config: &config.Config{Scheduler: config.SchedulerConfig{Cron: "@every 1s"}},
+			resolveBaseURLs: func(context.Context, string) api.Resolution {
+				jobStarted <- struct{}{}
+				<-jobCanFinish
+				return api.Resolution{}
+			},
+		}
+		if err := s.Start(ctx); err != nil {
+			t.Fatal(err)
+		}
+		<-jobStarted
+		time.Sleep(time.Second)
+		synctest.Wait()
+		select {
+		case <-jobStarted:
+			t.Error("second job started while the first was running")
+		default:
+		}
+
+		close(jobCanFinish)
+		synctest.Wait()
+		time.Sleep(time.Second)
+		synctest.Wait()
+		select {
+		case <-jobStarted:
+		default:
+			t.Error("no job started after the first job finished")
+		}
+
+		cancel()
+		s.Stop()
+	})
 }

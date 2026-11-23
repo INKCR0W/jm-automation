@@ -26,7 +26,7 @@ type Scheduler struct {
 	mu              sync.Mutex
 }
 
-func New(cfg *config.Config) (*Scheduler, error) {
+func New(ctx context.Context, cfg *config.Config) (*Scheduler, error) {
 	// 加载时区
 	loc, err := cfg.Scheduler.GetLocation()
 	if err != nil {
@@ -36,7 +36,10 @@ func New(cfg *config.Config) (*Scheduler, error) {
 	// 创建定时任务，设置时区
 	cronInstance := cron.New(cron.WithSeconds(), cron.WithLocation(loc))
 
-	baseURLs := uniqueBaseURLs(api.Resolve(context.Background(), cfg.Server.BaseURL).BaseURLs)
+	baseURLs := uniqueBaseURLs(api.Resolve(ctx, cfg.Server.BaseURL).BaseURLs)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	logger.Info("API 域名候选加载完成", "count", len(baseURLs), "primary", baseURLs[0])
 
 	return &Scheduler{
@@ -96,23 +99,27 @@ func equalBaseURLs(a, b []string) bool {
 }
 
 func (s *Scheduler) Start(ctx context.Context) error {
-	// 添加定时任务
-	_, err := s.cron.AddFunc(s.config.Scheduler.Cron, func() {
-		// 添加随机延迟
-		if s.config.Scheduler.RandomDelay != nil && *s.config.Scheduler.RandomDelay > 0 {
-			delay := s.getRandomDelay()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	job := cron.FuncJob(func() {
+		delay := s.getRandomDelay()
+		if delay > 0 {
 			logger.Info("添加随机延迟", "delay", delay)
-			time.Sleep(delay)
+		}
+		if err := utils.Wait(ctx, delay); err != nil {
+			return
 		}
 
-		// 每次执行时创建新的 context，避免使用已取消的 context
-		taskCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		taskCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 		defer cancel()
 
-		if err := s.RunOnce(taskCtx); err != nil {
+		if err := s.RunOnce(taskCtx); err != nil && ctx.Err() == nil {
 			logger.Error("定时任务执行失败", "error", err)
 		}
 	})
+	_, err := s.cron.AddJob(s.config.Scheduler.Cron, cron.SkipIfStillRunning(cron.DefaultLogger)(job))
 	if err != nil {
 		return fmt.Errorf("添加定时任务失败: %w", err)
 	}
@@ -145,14 +152,21 @@ func randomDelayDuration(maxMinutes int) time.Duration {
 	return time.Duration(randomMinutes) * time.Minute
 }
 
+// Stop 停止接收新的调度并等当前任务退出，调用前应取消传给 Start 的 context
 func (s *Scheduler) Stop() {
 	if s.cron != nil {
-		s.cron.Stop()
+		<-s.cron.Stop().Done()
 	}
 }
 
 func (s *Scheduler) RunOnce(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.refreshBaseURLs(ctx)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(s.config.Accounts))
@@ -184,6 +198,9 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 
 	wg.Wait()
 	close(errCh)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// 收集错误
 	var errs []error

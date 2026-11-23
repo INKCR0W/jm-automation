@@ -1,7 +1,10 @@
 package utils
 
 import (
+	"context"
+	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -75,24 +78,42 @@ func TestRandomDelay(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			start := time.Now()
-			RandomDelay(tt.min, tt.max)
-			elapsed := time.Since(start)
-
-			if tt.min == tt.max {
-				// 允许 10ms 的误差
-				if elapsed < tt.min-10*time.Millisecond || elapsed > tt.max+10*time.Millisecond {
-					t.Errorf("RandomDelay(%v, %v) took %v, expected around %v", tt.min, tt.max, elapsed, tt.min)
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
+				if err := RandomDelay(t.Context(), tt.min, tt.max); err != nil {
+					t.Fatal(err)
 				}
-				return
-			}
-
-			// 允许 10ms 的误差
-			if elapsed < tt.min-10*time.Millisecond || elapsed > tt.max+10*time.Millisecond {
-				t.Errorf("RandomDelay(%v, %v) took %v, want duration in range [%v, %v]", tt.min, tt.max, elapsed, tt.min, tt.max)
-			}
+				elapsed := time.Since(start)
+				if elapsed < tt.min || elapsed > tt.max {
+					t.Errorf("RandomDelay(%v, %v) took %v", tt.min, tt.max, elapsed)
+				}
+			})
 		})
 	}
+}
+
+func TestWaitReturnsWhenCanceled(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		result := make(chan error, 1)
+		go func() {
+			result <- Wait(ctx, time.Minute)
+		}()
+		synctest.Wait()
+
+		cancel()
+		synctest.Wait()
+		select {
+		case err := <-result:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("Wait returned %v, want context.Canceled", err)
+			}
+		default:
+			t.Error("Wait did not return upon cancellation")
+		}
+	})
 }
 
 func BenchmarkRandomInt(b *testing.B) {
