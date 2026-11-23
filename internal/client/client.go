@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -17,6 +19,7 @@ import (
 	http "github.com/bogdanfinn/fhttp"
 	tls_client "github.com/bogdanfinn/tls-client"
 	"github.com/bogdanfinn/tls-client/profiles"
+	"golang.org/x/net/idna"
 )
 
 // 响应码
@@ -73,21 +76,8 @@ type SessionData struct {
 	JWTToken string       `json:"jwt_token,omitempty"`
 }
 
-func newTLSClient(timeout time.Duration) (tls_client.HttpClient, error) {
-	options := []tls_client.HttpClientOption{
-		tls_client.WithTimeoutSeconds(int(timeout.Seconds())),
-		tls_client.WithClientProfile(profiles.Chrome_144),
-	}
-
-	httpClient, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(), options...)
-	if err != nil {
-		return nil, fmt.Errorf("创建 HTTP 客户端失败: %w", err)
-	}
-	return httpClient, nil
-}
-
 func New(baseURL string, timeout time.Duration, username string) (*Client, error) {
-	httpClient, err := newTLSClient(timeout)
+	client, err := NewEphemeral(baseURL, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -102,12 +92,7 @@ func New(baseURL string, timeout time.Duration, username string) (*Client, error
 		cookieFileName = username + "_session.json"
 	}
 
-	client := &Client{
-		httpClient: httpClient,
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		timeout:    timeout,
-		cookieFile: filepath.Join(cookieDir, cookieFileName),
-	}
+	client.cookieFile = filepath.Join(cookieDir, cookieFileName)
 
 	if err := client.LoadCookies(); err != nil {
 		logger.Debug("加载 cookies 失败", "username", username, "error", err)
@@ -118,16 +103,21 @@ func New(baseURL string, timeout time.Duration, username string) (*Client, error
 
 // 不落盘的临时 client，探活得跟业务请求同一套 TLS 指纹，否则探通了照样可能被拦
 func NewEphemeral(baseURL string, timeout time.Duration) (*Client, error) {
-	httpClient, err := newTLSClient(timeout)
+	client := &Client{
+		baseURL: strings.TrimRight(baseURL, "/"),
+		timeout: timeout,
+	}
+	httpClient, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(),
+		tls_client.WithTimeoutSeconds(int(timeout.Seconds())),
+		tls_client.WithClientProfile(profiles.Chrome_144),
+		tls_client.WithCustomRedirectFunc(client.checkRedirect),
+	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("创建 HTTP 客户端失败: %w", err)
 	}
 
-	return &Client{
-		httpClient: httpClient,
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		timeout:    timeout,
-	}, nil
+	client.httpClient = httpClient
+	return client, nil
 }
 
 func (c *Client) SetBaseURLs(baseURLs []string) {
@@ -299,10 +289,7 @@ func (c *Client) executeRequestOnce(ctx context.Context, opts requestOptions) (*
 		req.Header.Set("Authorization", "Bearer "+jwtToken)
 	}
 
-	// 添加 cookies
-	for _, cookie := range cappedCookies(c.cookieSnapshot()) {
-		req.AddCookie(cookie)
-	}
+	c.addRequestCookies(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -316,6 +303,7 @@ func (c *Client) executeRequestOnce(ctx context.Context, opts requestOptions) (*
 
 	// 保存 cookies
 	if cookies := resp.Cookies(); len(cookies) > 0 {
+		normalizeResponseCookieExpirations(cookies, time.Now())
 		c.appendCookies(cookies)
 	}
 
@@ -329,6 +317,67 @@ func (c *Client) executeRequestOnce(ctx context.Context, opts requestOptions) (*
 		Body:       respBody,
 		Headers:    resp.Header,
 	}, nil
+}
+
+func (c *Client) addRequestCookies(req *http.Request) {
+	host := canonicalCookieHost(req.URL.Hostname())
+	path := normalizeCookiePath(req.URL.EscapedPath())
+	now := time.Now()
+	cookies := c.cookieSnapshot()
+	matching := cookies[:0]
+	for _, cookie := range cookies {
+		if isDeletionCookie(cookie, now) || cookie.Secure && req.URL.Scheme != "https" {
+			continue
+		}
+		domain, ok := normalizeCookieDomain(cookie.Domain)
+		if !ok || !cookieDomainMatches(host, domain) {
+			continue
+		}
+		cookiePath := normalizeCookiePath(cookie.Path)
+		if path == cookiePath || strings.HasPrefix(path, strings.TrimSuffix(cookiePath, "/")+"/") {
+			matching = append(matching, cookie)
+		}
+	}
+	for _, cookie := range cappedCookies(matching) {
+		req.AddCookie(cookie)
+	}
+}
+
+func canonicalCookieHost(host string) string {
+	// 与 fhttp cookiejar 一样，只去掉请求主机名的末尾点，再转为 Punycode
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	ascii, err := idna.ToASCII(host)
+	if err != nil {
+		return ""
+	}
+	return ascii
+}
+
+func cookieDomainMatches(host, domain string) bool {
+	if domain == "" || domain == host {
+		return true
+	}
+	return strings.HasSuffix(host, "."+domain) && net.ParseIP(host) == nil
+}
+
+func (c *Client) checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after 10 redirects")
+	}
+
+	host := canonicalCookieHost(req.URL.Hostname())
+	initialHost := canonicalCookieHost(via[0].URL.Hostname())
+	hadCookies := req.Header.Get("Cookie") != ""
+	req.Header.Del("Cookie")
+	if host == "" || initialHost == "" {
+		return nil
+	}
+
+	// 多次跳转时 fhttp 可能重新复制初始 Cookie，作用域仍以初始主机为准
+	if host == initialHost || hadCookies && cookieDomainMatches(host, initialHost) {
+		c.addRequestCookies(req)
+	}
+	return nil
 }
 
 func (c *Client) doRequest(ctx context.Context, method, path string, body interface{}, headers map[string]string) (*Response, error) {
@@ -565,7 +614,7 @@ func (c *Client) cookieValidationPolicy() cookieValidationPolicy {
 			continue
 		}
 
-		if host := strings.ToLower(u.Hostname()); host != "" {
+		if host := canonicalCookieHost(u.Hostname()); host != "" {
 			policy.allowedHosts[host] = struct{}{}
 		}
 		switch strings.ToLower(u.Scheme) {
@@ -631,7 +680,7 @@ func (p cookieValidationPolicy) allowsDomain(domain string) bool {
 	}
 
 	for host := range p.allowedHosts {
-		if host == normalizedDomain || strings.HasSuffix(host, "."+normalizedDomain) {
+		if cookieDomainMatches(host, normalizedDomain) {
 			return true
 		}
 	}
@@ -646,7 +695,8 @@ func normalizeCookieDomain(domain string) (string, bool) {
 	if strings.ContainsAny(normalized, " \t\r\n/\\:") {
 		return "", false
 	}
-	return normalized, true
+	ascii, err := idna.ToASCII(normalized)
+	return ascii, err == nil && ascii != ""
 }
 
 func cookieDataToHTTPCookie(cd CookieData) *http.Cookie {
@@ -768,11 +818,25 @@ func (c *Client) applySession(cookies []*http.Cookie, userID, username, jwtToken
 	c.jwtToken = jwtToken
 }
 
-// 按 RFC 6265 (name, domain, path) 一样就是同一个 cookie，其中空 path 等价于 "/"
-// 不归一化的话服务端下发的 AVS 和登录响应里自己造的 AVS 会并存
-func cookieKey(cookie *http.Cookie) string {
-	return strings.ToLower(strings.TrimPrefix(cookie.Domain, ".")) + ";" +
-		normalizeCookiePath(cookie.Path) + ";" + cookie.Name
+type cookieIdentity struct {
+	domain        string
+	path          string
+	name          string
+	isValidDomain bool
+}
+
+// 按 RFC 6265，(name, domain, path) 相同的 Cookie 互相替换，兼容旧会话的空 Path
+func cookieKey(cookie *http.Cookie) cookieIdentity {
+	domain, ok := normalizeCookieDomain(cookie.Domain)
+	if !ok {
+		domain = strings.ToLower(strings.TrimPrefix(cookie.Domain, "."))
+	}
+	return cookieIdentity{
+		domain:        domain,
+		path:          normalizeCookiePath(cookie.Path),
+		name:          cookie.Name,
+		isValidDomain: ok,
+	}
 }
 
 func normalizeCookiePath(path string) string {
@@ -780,6 +844,19 @@ func normalizeCookiePath(path string) string {
 		return "/"
 	}
 	return path
+}
+
+func normalizeResponseCookieExpirations(cookies []*http.Cookie, receivedAt time.Time) {
+	// 只在收到响应时换算，避免读取缓存时重新开始计时
+	const maxAgeSeconds = math.MaxInt64 / int64(time.Second)
+	for _, cookie := range cookies {
+		if cookie.MaxAge <= 0 {
+			continue
+		}
+		seconds := min(int64(cookie.MaxAge), maxAgeSeconds)
+		cookie.Expires = receivedAt.Add(time.Duration(seconds) * time.Second)
+		cookie.MaxAge = 0
+	}
 }
 
 func isDeletionCookie(cookie *http.Cookie, now time.Time) bool {
@@ -799,7 +876,7 @@ func mergeCookies(existing, incoming []*http.Cookie) []*http.Cookie {
 	now := time.Now()
 
 	merged := make([]*http.Cookie, 0, len(existing)+len(incoming))
-	index := make(map[string]int, len(existing)+len(incoming))
+	index := make(map[cookieIdentity]int, len(existing)+len(incoming))
 	for _, cookie := range cloneCookies(existing) {
 		key := cookieKey(cookie)
 		if pos, ok := index[key]; ok {

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	stdhttp "net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"strconv"
@@ -310,7 +312,7 @@ func TestDoRequestOnceBuildsJSONRequest(t *testing.T) {
 func TestDoRequestRawOncePreservesRawBodyAndCookies(t *testing.T) {
 	stub := &stubHTTPClient{
 		responseHeader: http.Header{
-			"Set-Cookie": {"AVS=response-token; Path=/"},
+			"Set-Cookie": {"AVS=response-token; Path=/; Max-Age=3600; Expires=Fri, 06 Nov 1998 08:49:37 GMT"},
 		},
 	}
 	c := &Client{
@@ -320,6 +322,7 @@ func TestDoRequestRawOncePreservesRawBodyAndCookies(t *testing.T) {
 	}
 	c.setCookies([]*http.Cookie{{Name: "remember", Value: "cookie-token"}})
 
+	requestStartedAt := time.Now()
 	_, err := c.doRequestRawOnce(
 		context.Background(),
 		http.MethodPost,
@@ -349,6 +352,196 @@ func TestDoRequestRawOncePreservesRawBodyAndCookies(t *testing.T) {
 	}
 	if cookies[1].Name != "AVS" || cookies[1].Value != "response-token" {
 		t.Fatalf("response cookie = %s=%s, want AVS=response-token", cookies[1].Name, cookies[1].Value)
+	}
+	if cookies[1].MaxAge != 0 || cookies[1].Expires.Before(requestStartedAt.Add(time.Hour)) ||
+		cookies[1].Expires.After(time.Now().Add(time.Hour)) {
+		t.Fatalf("response cookie lifetime got MaxAge = %d, Expires = %v", cookies[1].MaxAge, cookies[1].Expires)
+	}
+}
+
+func TestRequestsOnlySendMatchingCookies(t *testing.T) {
+	cookies := []*http.Cookie{
+		{Name: "AVS", Value: "legacy"},
+		{Name: "secure", Value: "session", Secure: true},
+		{Name: "domain", Value: "session", Domain: ".EXAMPLE.test"},
+		{Name: "path", Value: "session", Path: "/private"},
+		{Name: "encoded", Value: "session", Path: "/a%20b"},
+		{Name: "ascii", Value: "session", Domain: "xn--bcher-kva.example"},
+		{Name: "unicode", Value: "session", Domain: "bücher.example"},
+		{Name: "invalid", Value: "session", Domain: "example.test."},
+		{Name: "expired", Value: "session", MaxAge: 60},
+	}
+	normalizeResponseCookieExpirations(cookies, time.Now().Add(-time.Hour))
+	tests := []struct {
+		name    string
+		baseURL string
+		path    string
+		want    string
+	}{
+		{
+			name:    "matching HTTPS subdomain and child path",
+			baseURL: "https://api.example.test:8443",
+			path:    "/private/page",
+			want:    "AVS=legacy; secure=session; domain=session; path=session",
+		},
+		{
+			name:    "same domain over HTTP",
+			baseURL: "http://example.test",
+			path:    "/private",
+			want:    "AVS=legacy; domain=session; path=session",
+		},
+		{
+			name:    "unrelated mirror and nonmatching path prefix",
+			baseURL: "https://notexample.test",
+			path:    "/privateer",
+			want:    "AVS=legacy; secure=session",
+		},
+		{
+			name:    "matching escaped path",
+			baseURL: "https://api.example.test",
+			path:    "/a%20b/favorite",
+			want:    "AVS=legacy; secure=session; domain=session; encoded=session",
+		},
+		{
+			name:    "escaped slash is not a path separator",
+			baseURL: "https://api.example.test",
+			path:    "/private%2Ffavorite",
+			want:    "AVS=legacy; secure=session; domain=session",
+		},
+		{
+			name:    "FQDN with root dot",
+			baseURL: "https://api.example.test.:8443",
+			path:    "/favorite",
+			want:    "AVS=legacy; secure=session; domain=session",
+		},
+		{
+			name:    "Unicode request host",
+			baseURL: "https://bücher.example",
+			path:    "/favorite",
+			want:    "AVS=legacy; secure=session; ascii=session; unicode=session",
+		},
+		{
+			name:    "ASCII request host",
+			baseURL: "https://xn--bcher-kva.example",
+			path:    "/favorite",
+			want:    "AVS=legacy; secure=session; ascii=session; unicode=session",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := &stubHTTPClient{}
+			c := &Client{httpClient: stub, baseURL: tt.baseURL, cookies: cookies}
+			if _, err := c.Get(context.Background(), tt.path, nil); err != nil {
+				t.Fatal(err)
+			}
+			req := stub.lastRequest(t)
+			wantURL, err := url.Parse(tt.baseURL + tt.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if req.url != wantURL.String() {
+				t.Fatalf("URL = %q, want %q", req.url, wantURL)
+			}
+			if got := req.header.Get("Cookie"); got != tt.want {
+				t.Fatalf("Cookie = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadCookiesMatchesCanonicalHost(t *testing.T) {
+	c := newSessionTestClient(t, "https://bücher.example.:8443")
+	writeSessionFile(t, c.cookieFile, SessionData{Cookies: []CookieData{
+		{Name: "ascii", Domain: "xn--bcher-kva.example"},
+		{Name: "legacy", Domain: "bücher.example"},
+		{Name: "trailing-dot", Domain: "xn--bcher-kva.example."},
+		{Name: "malformed", Domain: "bücher.example/invalid"},
+		{Name: "host-only"},
+	}})
+	if err := c.LoadCookies(); err != nil {
+		t.Fatal(err)
+	}
+	assertCookieNames(t, c.GetCookies(), []string{"ascii", "legacy", "host-only"})
+}
+
+func TestRedirectKeepsCookiesForCanonicalSameHost(t *testing.T) {
+	initial, err := http.NewRequest(http.MethodGet, "https://bücher.example./private", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	redirected, err := http.NewRequest(http.MethodGet, "https://xn--bcher-kva.example/public", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Client{cookies: []*http.Cookie{{Name: "AVS", Value: "legacy"}}}
+	if err := c.checkRedirect(redirected, []*http.Request{initial}); err != nil {
+		t.Fatal(err)
+	}
+	if got := redirected.Header.Get("Cookie"); got != "AVS=legacy" {
+		t.Fatalf("redirected Cookie = %q, want AVS=legacy", got)
+	}
+}
+
+func TestRedirectRechecksCookiePath(t *testing.T) {
+	server := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		switch r.URL.Path {
+		case "/private/start":
+			if got := r.Header.Get("Cookie"); got != "AVS=legacy; path=session" {
+				t.Errorf("initial Cookie = %q", got)
+			}
+			stdhttp.Redirect(w, r, "/public", stdhttp.StatusFound)
+		case "/public":
+			_, _ = io.WriteString(w, r.Header.Get("Cookie"))
+		default:
+			t.Errorf("unexpected request to %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewEphemeral(server.URL, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.setCookies([]*http.Cookie{
+		{Name: "AVS", Value: "legacy"},
+		{Name: "path", Value: "session", Path: "/private"},
+	})
+	resp, err := c.Get(context.Background(), "/private/start", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(resp.Body); got != "AVS=legacy" {
+		t.Fatalf("redirected Cookie = %q, want %q", got, "AVS=legacy")
+	}
+}
+
+func TestRedirectDoesNotRestoreCookiesOnUnrelatedHost(t *testing.T) {
+	target := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		if r.Header.Get("Cookie") != "" {
+			t.Errorf("unrelated redirect received a Cookie on %s", r.URL.Path)
+		}
+		if r.URL.Path == "/relay" {
+			stdhttp.Redirect(w, r, "/target", stdhttp.StatusFound)
+		}
+	}))
+	t.Cleanup(target.Close)
+
+	initial := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		if got := r.Header.Get("Cookie"); got != "AVS=legacy" {
+			t.Errorf("initial Cookie = %q, want AVS=legacy", got)
+		}
+		stdhttp.Redirect(w, r, target.URL+"/relay", stdhttp.StatusFound)
+	}))
+	t.Cleanup(initial.Close)
+
+	baseURL := strings.Replace(initial.URL, "127.0.0.1", "localhost", 1)
+	c, err := NewEphemeral(baseURL, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.setCookies([]*http.Cookie{{Name: "AVS", Value: "legacy"}})
+	if _, err := c.Get(context.Background(), "/start", nil); err != nil {
+		t.Fatal(err)
 	}
 }
 

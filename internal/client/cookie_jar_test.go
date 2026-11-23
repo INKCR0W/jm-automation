@@ -1,6 +1,7 @@
 package client
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -97,6 +98,59 @@ func TestAppendCookiesKeepsDistinctDomainAndPath(t *testing.T) {
 	}
 }
 
+func TestAppendCookiesTreatsIDNDomainFormsAsOneCookie(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		maxAge int
+		want   int
+	}{
+		{name: "replace", want: 1},
+		{name: "delete", maxAge: -1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newSessionTestClient(t, "https://xn--bcher-kva.example")
+			writeSessionFile(t, c.cookieFile, []CookieData{
+				{Name: "AVS", Value: "old", Domain: "bücher.example"},
+			})
+			if err := c.LoadCookies(); err != nil {
+				t.Fatal(err)
+			}
+			assertCookieNames(t, c.GetCookies(), []string{"AVS"})
+
+			c.appendCookies([]*http.Cookie{
+				{Name: "AVS", Value: "updated", Domain: ".xn--bcher-kva.example", Path: "/", MaxAge: tt.maxAge},
+			})
+			cookies := c.GetCookies()
+			if len(cookies) != tt.want {
+				t.Fatalf("cookie count = %d, want %d", len(cookies), tt.want)
+			}
+			if tt.want == 1 && cookies[0].Value != "updated" {
+				t.Fatalf("AVS value = %q, want updated", cookies[0].Value)
+			}
+		})
+	}
+}
+
+func TestAppendCookiesKeepsInvalidDomainSeparateFromEmptyDomain(t *testing.T) {
+	c := &Client{}
+	c.appendCookies([]*http.Cookie{
+		{Name: "AVS", Value: "legacy"},
+		{Name: "AVS", Value: "invalid", Domain: "bad domain"},
+	})
+	if got := c.GetCookies(); len(got) != 2 {
+		t.Fatalf("cookie count = %d, want 2", len(got))
+	}
+
+	c.appendCookies([]*http.Cookie{
+		{Name: "AVS", Domain: ".BAD DOMAIN", MaxAge: -1},
+	})
+	cookies := c.GetCookies()
+	assertCookieNames(t, cookies, []string{"AVS"})
+	if cookies[0].Domain != "" || cookies[0].Value != "legacy" {
+		t.Fatalf("remaining AVS domain = %q, value = %q, want empty domain and legacy value", cookies[0].Domain, cookies[0].Value)
+	}
+}
+
 func TestAppendCookiesHonorsDeletion(t *testing.T) {
 	c := &Client{}
 	c.appendCookies([]*http.Cookie{
@@ -123,6 +177,68 @@ func TestAppendCookiesKeepsPositiveMaxAgeWithPastExpires(t *testing.T) {
 
 	if got := c.GetCookies(); len(got) != 1 {
 		t.Fatalf("cookie count = %d, want 1", len(got))
+	}
+}
+
+func TestResponseCookieLifetimesUseReceiptTime(t *testing.T) {
+	receivedAt := time.Date(2026, time.November, 23, 0, 0, 0, 0, time.UTC)
+	past := receivedAt.Add(-time.Hour)
+	cookies := []*http.Cookie{
+		{Name: "max-age", MaxAge: 60},
+		{Name: "both", MaxAge: 60, Expires: past},
+		{Name: "absolute", Expires: past},
+		{Name: "delete", MaxAge: -1},
+		{Name: "long", MaxAge: math.MaxInt},
+	}
+
+	normalizeResponseCookieExpirations(cookies, receivedAt)
+
+	for _, cookie := range cookies[:2] {
+		if cookie.MaxAge != 0 || !cookie.Expires.Equal(receivedAt.Add(time.Minute)) {
+			t.Fatalf("%s got MaxAge = %d, Expires = %v, want expiry one minute after receipt", cookie.Name, cookie.MaxAge, cookie.Expires)
+		}
+	}
+	if !cookies[2].Expires.Equal(past) || cookies[3].MaxAge != -1 || !cookies[3].Expires.IsZero() {
+		t.Fatal("absolute and deletion cookie lifetimes changed")
+	}
+	if cookies[4].MaxAge != 0 || !cookies[4].Expires.After(receivedAt.Add(24*time.Hour)) {
+		t.Fatalf("large MaxAge got MaxAge = %d, Expires = %v", cookies[4].MaxAge, cookies[4].Expires)
+	}
+}
+
+func TestCookieExpirySurvivesCacheReload(t *testing.T) {
+	receivedAt := time.Now().Truncate(time.Second).Add(-time.Hour)
+	current := &http.Cookie{Name: "AVS", Value: "current", MaxAge: 7200}
+	old := &http.Cookie{Name: "remember", Value: "legacy", MaxAge: 1}
+	normalizeResponseCookieExpirations([]*http.Cookie{current}, receivedAt)
+	c := newSessionTestClient(t, "https://api.example.test")
+	c.setCookies([]*http.Cookie{current, old})
+	if err := c.SaveCookies(); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := &Client{cookieFile: c.cookieFile, baseURL: c.baseURL}
+	if err := reloaded.LoadCookies(); err != nil {
+		t.Fatal(err)
+	}
+	cookies := reloaded.GetCookies()
+	assertCookieNames(t, cookies, []string{"AVS", "remember"})
+	if cookies[0].MaxAge != 0 || !cookies[0].Expires.Equal(receivedAt.Add(2*time.Hour)) {
+		t.Fatalf("current cache got MaxAge = %d, Expires = %v", cookies[0].MaxAge, cookies[0].Expires)
+	}
+	if cookies[1].MaxAge != 1 || !cookies[1].Expires.IsZero() {
+		t.Fatalf("legacy cache got MaxAge = %d, Expires = %v", cookies[1].MaxAge, cookies[1].Expires)
+	}
+
+	writeSessionFile(t, c.cookieFile, []CookieData{{Name: "remember", Value: "legacy", MaxAge: 1}})
+	reloaded = &Client{cookieFile: c.cookieFile, baseURL: c.baseURL}
+	if err := reloaded.LoadCookies(); err != nil {
+		t.Fatal(err)
+	}
+	cookies = reloaded.GetCookies()
+	assertCookieNames(t, cookies, []string{"remember"})
+	if cookies[0].MaxAge != 1 || !cookies[0].Expires.IsZero() {
+		t.Fatalf("old cache format got MaxAge = %d, Expires = %v", cookies[0].MaxAge, cookies[0].Expires)
 	}
 }
 
