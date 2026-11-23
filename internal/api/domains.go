@@ -84,7 +84,9 @@ func ResolveDynamicBaseURLs(ctx context.Context) []string {
 func resolveDynamicBaseURLs(ctx context.Context) ([]string, bool) {
 	urls, err := fetchHostConfig(ctx)
 	if err != nil {
-		logger.Warn("获取远程域名配置失败，使用内置域名", "error", err)
+		if ctx.Err() == nil {
+			logger.Warn("获取远程域名配置失败，使用内置域名", "error", err)
+		}
 		return fallbackBaseURLs(), false
 	}
 
@@ -121,13 +123,20 @@ func decodeHostConfig(raw string) ([]string, error) {
 // 每个白等一次超时，等于把当初要修的卡顿绕回来了
 func promoteLiveBaseURL(ctx context.Context, candidates []string) ([]string, bool) {
 	for i, baseURL := range candidates {
+		if ctx.Err() != nil {
+			return candidates, false
+		}
 		if i >= maxProbedCandidates {
 			logger.Warn("达到探活上限，剩余候选不再探活",
 				"probed", i, "remaining", len(candidates)-i)
 			break
 		}
 
-		if err := probeSetting(ctx, baseURL); err != nil {
+		err := probeSetting(ctx, baseURL)
+		if ctx.Err() != nil {
+			return candidates, false
+		}
+		if err != nil {
 			logger.Warn("API 域名探活失败", "base_url", baseURL, "error", err)
 			continue
 		}
@@ -156,7 +165,7 @@ func probeSetting(ctx context.Context, baseURL string) error {
 	probeCtx, cancel := context.WithTimeout(ctx, settingProbeTimeout)
 	defer cancel()
 
-	probeClient, err := client.NewEphemeral(baseURL, settingProbeTimeout)
+	probeClient, err := client.NewEphemeral(probeCtx, baseURL, settingProbeTimeout)
 	if err != nil {
 		return err
 	}
@@ -192,6 +201,9 @@ func fetchHostConfig(ctx context.Context) ([]string, error) {
 	var lastErr error
 
 	for _, configURL := range HostConfigURLs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, configURL, nil)
 		if err != nil {
 			lastErr = err

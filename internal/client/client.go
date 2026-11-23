@@ -98,8 +98,8 @@ type SessionData struct {
 	JWTToken string       `json:"jwt_token,omitempty"`
 }
 
-func New(baseURL string, timeout time.Duration, username string) (*Client, error) {
-	client, err := NewEphemeral(baseURL, timeout)
+func New(lifetime context.Context, baseURL string, timeout time.Duration, username string) (*Client, error) {
+	client, err := NewEphemeral(lifetime, baseURL, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -123,14 +123,19 @@ func New(baseURL string, timeout time.Duration, username string) (*Client, error
 	return client, nil
 }
 
-// 不落盘的临时 client，探活得跟业务请求同一套 TLS 指纹，否则探通了照样可能被拦
-func NewEphemeral(baseURL string, timeout time.Duration) (*Client, error) {
+// NewEphemeral 使用与账号客户端相同的 TLS 指纹，连接随 lifetime 结束
+func NewEphemeral(lifetime context.Context, baseURL string, timeout time.Duration) (*Client, error) {
+	if err := lifetime.Err(); err != nil {
+		return nil, err
+	}
 	client := &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		timeout: timeout,
 	}
+	timeoutSeconds := int(timeout.Seconds())
 	httpClient, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(),
-		tls_client.WithTimeoutSeconds(int(timeout.Seconds())),
+		tls_client.WithTimeoutSeconds(timeoutSeconds),
+		tls_client.WithDialContext(newLifecycleDialer(lifetime, time.Duration(timeoutSeconds)*time.Second)),
 		tls_client.WithClientProfile(profiles.Chrome_144),
 		tls_client.WithCookieJar(sessionCookieJar{client}),
 		tls_client.WithCustomRedirectFunc(checkRedirect),
@@ -168,7 +173,7 @@ func (c *Client) BaseURL() string {
 }
 
 // ConfirmBaseURL 在业务调用确认响应成功后将产生它的备用候选设为首选
-func (c *Client) ConfirmBaseURL(resp *Response) {
+func (c *Client) ConfirmBaseURL(ctx context.Context, resp *Response) {
 	selection := resp.baseURLSelection
 	if selection.client != c {
 		return
@@ -178,7 +183,7 @@ func (c *Client) ConfirmBaseURL(resp *Response) {
 	defer c.sessionMu.Unlock()
 
 	// 更新候选或首选后，旧请求的结果不能再次覆盖首选
-	if selection.revision == c.baseURLRevision {
+	if ctx.Err() == nil && selection.revision == c.baseURLRevision {
 		c.baseURL = selection.baseURL
 		c.baseURLRevision++
 	}
@@ -218,7 +223,7 @@ func (c *Client) postForm(ctx context.Context, path string, formData map[string]
 	}
 	body := values.Encode()
 
-	return c.doWithBaseURLFallback(http.MethodPost, confirmation, func(baseURL string) (*Response, error) {
+	return c.doWithBaseURLFallback(ctx, http.MethodPost, confirmation, func(baseURL string) (*Response, error) {
 		return c.doRequestRawOnce(ctx, http.MethodPost, baseURL, path, body, headers)
 	})
 }
@@ -361,18 +366,24 @@ func (c *Client) executeRequestOnce(ctx context.Context, opts requestOptions) (*
 }
 
 func (c *Client) doRequest(ctx context.Context, method, path string, body interface{}, headers map[string]string, confirmation baseURLConfirmation) (*Response, error) {
-	return c.doWithBaseURLFallback(method, confirmation, func(baseURL string) (*Response, error) {
+	return c.doWithBaseURLFallback(ctx, method, confirmation, func(baseURL string) (*Response, error) {
 		return c.doRequestOnce(ctx, method, baseURL, path, body, headers)
 	})
 }
 
-func (c *Client) doWithBaseURLFallback(method string, confirmation baseURLConfirmation, execute func(baseURL string) (*Response, error)) (*Response, error) {
+func (c *Client) doWithBaseURLFallback(ctx context.Context, method string, confirmation baseURLConfirmation, execute func(baseURL string) (*Response, error)) (*Response, error) {
 	baseURLs, revision := c.requestBaseURLs()
 	var lastResp *Response
 	var lastErr error
 
 	for i, baseURL := range baseURLs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		resp, err := execute(baseURL)
+		if contextErr := ctx.Err(); contextErr != nil {
+			return nil, contextErr
+		}
 		if err != nil {
 			lastErr = err
 			continue
@@ -383,7 +394,7 @@ func (c *Client) doWithBaseURLFallback(method string, confirmation baseURLConfir
 			if i > 0 && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				resp.baseURLSelection = baseURLSelection{client: c, baseURL: baseURL, revision: revision}
 				if confirmation == confirmHTTPStatus {
-					c.ConfirmBaseURL(resp)
+					c.ConfirmBaseURL(ctx, resp)
 				}
 			}
 			return resp, nil

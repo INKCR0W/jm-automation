@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -56,6 +57,7 @@ func TestGetOrCreateClientLoadsCookiesAfterBaseURLsAreSet(t *testing.T) {
 	}
 
 	s := &Scheduler{
+		lifetime: t.Context(),
 		config: &config.Config{
 			Server: config.ServerConfig{
 				BaseURL: "https://primary.example.test",
@@ -199,6 +201,7 @@ func intPtr(value int) *int {
 
 func TestRefreshBaseURLsUpdatesExistingClients(t *testing.T) {
 	s := &Scheduler{
+		lifetime: t.Context(),
 		config: &config.Config{
 			Server: config.ServerConfig{BaseURL: "https://configured.example.net", Timeout: 5},
 		},
@@ -263,6 +266,7 @@ func TestRefreshBaseURLsKeepsPreviousWhenUnchanged(t *testing.T) {
 func TestRefreshBaseURLsKeepsPreviousOnDegradedResolution(t *testing.T) {
 	previous := []string{"https://resolved-a.example.net", "https://resolved-b.example.net"}
 	s := &Scheduler{
+		lifetime:  t.Context(),
 		config:    &config.Config{Server: config.ServerConfig{Timeout: 5}},
 		clientMap: make(map[string]*client.Client),
 		baseURLs:  previous,
@@ -343,7 +347,7 @@ func TestStopWaitsForActiveJob(t *testing.T) {
 		defer cancel()
 
 		jobStarted := make(chan struct{})
-		jobCanceled := make(chan struct{})
+		jobCanceled := make(chan error, 1)
 		jobCanFinish := make(chan struct{})
 		s := &Scheduler{
 			cron:   cron.New(),
@@ -351,7 +355,7 @@ func TestStopWaitsForActiveJob(t *testing.T) {
 			resolveBaseURLs: func(ctx context.Context, _ string) api.Resolution {
 				close(jobStarted)
 				<-ctx.Done()
-				close(jobCanceled)
+				jobCanceled <- ctx.Err()
 				<-jobCanFinish
 				return api.Resolution{}
 			},
@@ -367,7 +371,9 @@ func TestStopWaitsForActiveJob(t *testing.T) {
 			s.Stop()
 			close(stopped)
 		}()
-		<-jobCanceled
+		if err := <-jobCanceled; !errors.Is(err, context.Canceled) {
+			t.Errorf("job cancellation = %v, want context.Canceled", err)
+		}
 		synctest.Wait()
 		select {
 		case <-stopped:

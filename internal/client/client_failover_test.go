@@ -2,7 +2,9 @@ package client
 
 import (
 	"context"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -86,6 +88,47 @@ func TestGetReturnsBackupHTTPErrorWithoutPromotingIt(t *testing.T) {
 	}
 }
 
+func TestCanceledFallbackReturnsCancellationInsteadOfEarlierResponse(t *testing.T) {
+	c := newFailoverTestClient(t, "https://primary.example.test", "https://backup.example.test")
+	c.SetBaseURLs([]string{c.BaseURL(), "https://backup.example.test", "https://third.example.test"})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	resp, err := c.doWithBaseURLFallback(ctx, http.MethodGet, confirmHTTPStatus, func(baseURL string) (*Response, error) {
+		switch baseURL {
+		case "https://primary.example.test":
+			return &Response{StatusCode: http.StatusBadGateway}, nil
+		case "https://backup.example.test":
+			cancel()
+			return nil, net.ErrClosed
+		default:
+			t.Fatalf("attempted %s after cancellation", baseURL)
+			return nil, nil
+		}
+	})
+	if !errors.Is(err, context.Canceled) || resp != nil {
+		t.Fatalf("result = %v, %v, want context.Canceled", resp, err)
+	}
+}
+
+func TestConfirmBaseURLIgnoresCanceledRequest(t *testing.T) {
+	primary := newFailoverTestServer(t, http.StatusBadGateway, "bad gateway")
+	backup := newFailoverTestServer(t, http.StatusOK, "backup")
+	c := newFailoverTestClient(t, primary.URL, backup.URL)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	resp, err := c.GetWithToken(ctx, "/favorite", 123, "2.0.20")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("request = %v, %v, want successful backup response", resp, err)
+	}
+	cancel()
+	c.ConfirmBaseURL(ctx, resp)
+	if got := c.BaseURL(); got != primary.URL {
+		t.Fatalf("base URL after cancellation = %s, want %s", got, primary.URL)
+	}
+}
+
 func TestConfirmBaseURLCannotRestoreRemovedCandidate(t *testing.T) {
 	primary := newFailoverTestServer(t, http.StatusBadGateway, "bad gateway")
 	backup := newFailoverTestServer(t, http.StatusOK, "backup")
@@ -99,7 +142,7 @@ func TestConfirmBaseURLCannotRestoreRemovedCandidate(t *testing.T) {
 		t.Fatalf("unconfirmed base URL = %s, want %s", got, primary.URL)
 	}
 	c.SetBaseURLs([]string{primary.URL})
-	c.ConfirmBaseURL(resp)
+	c.ConfirmBaseURL(t.Context(), resp)
 	if got := c.BaseURL(); got != primary.URL {
 		t.Fatalf("base URL after confirming stale response = %s, want %s", got, primary.URL)
 	}
@@ -139,7 +182,7 @@ func newFailoverTestServer(t *testing.T, status int, body string) *httptest.Serv
 
 func newFailoverTestClient(t *testing.T, primary, backup string) *Client {
 	t.Helper()
-	c, err := NewEphemeral(primary, 2*time.Second)
+	c, err := NewEphemeral(t.Context(), primary, 2*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

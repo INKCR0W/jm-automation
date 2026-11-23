@@ -56,7 +56,7 @@ func TestDailyCheckInResponse(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			c, err := client.NewEphemeral(srv.URL, time.Second)
+			c, err := client.NewEphemeral(t.Context(), srv.URL, time.Second)
 			if err != nil {
 				t.Fatal(err)
 			}

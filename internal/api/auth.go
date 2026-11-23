@@ -56,7 +56,7 @@ func (a *AuthAPI) tryUseCachedSession(ctx context.Context) (*LoginData, bool) {
 	resp, err := a.client.GetWithToken(ctx, "/favorite?page=1&folder_id=0&o=mr", ts, AppVersion)
 	if err == nil && resp.StatusCode == 200 {
 		if _, err := a.client.DecryptResponse(resp, ts); err == nil {
-			a.client.ConfirmBaseURL(resp)
+			a.client.ConfirmBaseURL(ctx, resp)
 			a.avs = a.client.CookieValue(resp.RequestURL, "AVS")
 			a.userID = cachedUserID
 			logger.Info("使用已保存的登录状态成功", "uid", cachedUserID, "username", cachedUsername)
@@ -100,7 +100,7 @@ func (a *AuthAPI) loginWithCredentials(ctx context.Context, username, password s
 		return nil, err
 	}
 
-	a.client.ConfirmBaseURL(resp)
+	a.client.ConfirmBaseURL(ctx, resp)
 	a.applyLoginSession(loginData, resp.RequestURL)
 	return &loginData, nil
 }

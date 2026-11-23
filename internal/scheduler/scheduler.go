@@ -17,6 +17,7 @@ import (
 )
 
 type Scheduler struct {
+	lifetime        context.Context
 	cron            *cron.Cron
 	config          *config.Config
 	clientMap       map[string]*client.Client
@@ -26,6 +27,7 @@ type Scheduler struct {
 	mu              sync.Mutex
 }
 
+// New 将账号客户端的连接绑定到 ctx，ctx 应覆盖调度器的整个生命周期
 func New(ctx context.Context, cfg *config.Config) (*Scheduler, error) {
 	// 加载时区
 	loc, err := cfg.Scheduler.GetLocation()
@@ -43,6 +45,7 @@ func New(ctx context.Context, cfg *config.Config) (*Scheduler, error) {
 	logger.Info("API 域名候选加载完成", "count", len(baseURLs), "primary", baseURLs[0])
 
 	return &Scheduler{
+		lifetime:        ctx,
 		cron:            cronInstance,
 		config:          cfg,
 		clientMap:       make(map[string]*client.Client),
@@ -64,6 +67,9 @@ func (s *Scheduler) refreshBaseURLs(ctx context.Context) {
 	}
 
 	resolution := resolve(ctx, s.config.Server.BaseURL)
+	if ctx.Err() != nil {
+		return
+	}
 	if resolution.Degraded() {
 		logger.Warn("本轮无 API 域名探活成功，沿用现有候选", "remote_config", resolution.Remote)
 		return
@@ -151,7 +157,7 @@ func randomDelayDuration(maxMinutes int) time.Duration {
 	return time.Duration(randomMinutes) * time.Minute
 }
 
-// Stop 停止接收新的调度并等当前任务退出，调用前应取消传给 Start 的 context
+// Stop 停止接收新的调度并等待当前任务退出，调用前应取消传给 New 和 Start 的 context
 func (s *Scheduler) Stop() {
 	if s.cron != nil {
 		<-s.cron.Stop().Done()
@@ -171,6 +177,9 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 	errCh := make(chan error, len(s.config.Accounts))
 
 	for _, account := range s.config.Accounts {
+		if ctx.Err() != nil {
+			break
+		}
 		if !account.Enabled {
 			logger.Info("账号已禁用，跳过", "username", account.Username)
 			continue
@@ -179,6 +188,9 @@ func (s *Scheduler) RunOnce(ctx context.Context) error {
 		wg.Add(1)
 		go func(acc config.Account) {
 			defer wg.Done()
+			if ctx.Err() != nil {
+				return
+			}
 
 			c, err := s.getOrCreateClient(acc.Username)
 			if err != nil {
@@ -222,7 +234,7 @@ func (s *Scheduler) getOrCreateClient(username string) (*client.Client, error) {
 		return c, nil
 	}
 
-	c, err := client.New(s.config.Server.BaseURL, s.config.Server.GetTimeout(), username)
+	c, err := client.New(s.lifetime, s.config.Server.BaseURL, s.config.Server.GetTimeout(), username)
 	if err != nil {
 		return nil, fmt.Errorf("创建客户端失败: %w", err)
 	}

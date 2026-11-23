@@ -35,14 +35,14 @@ func TestLoadCookiesSupportsJWTOnlySession(t *testing.T) {
 	}
 	defer func() { _ = os.Chdir(wd) }()
 
-	c, err := New("https://example.test", time.Second, "jwt-only")
+	c, err := New(t.Context(), "https://example.test", time.Second, "jwt-only")
 	if err != nil {
 		t.Fatalf("new client failed: %v", err)
 	}
 	c.SetJWTToken("token-123")
 	c.SetUserInfo("42", "tester")
 
-	loaded, err := New("https://example.test", time.Second, "jwt-only")
+	loaded, err := New(t.Context(), "https://example.test", time.Second, "jwt-only")
 	if err != nil {
 		t.Fatalf("new client with persisted session failed: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestRedirectRechecksCookiePath(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewEphemeral(server.URL, 2*time.Second)
+	c, err := NewEphemeral(t.Context(), server.URL, 2*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +530,7 @@ func TestRedirectDoesNotRestoreCookiesOnUnrelatedHost(t *testing.T) {
 	t.Cleanup(initial.Close)
 
 	baseURL := strings.Replace(initial.URL, "127.0.0.1", "localhost", 1)
-	c, err := NewEphemeral(baseURL, 2*time.Second)
+	c, err := NewEphemeral(t.Context(), baseURL, 2*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -548,7 +548,7 @@ func TestDoWithBaseURLFallbackRetriesHTMLAndPromotesWorkingBaseURL(t *testing.T)
 	}
 
 	calls := make([]string, 0, 2)
-	resp, err := c.doWithBaseURLFallback(http.MethodGet, confirmHTTPStatus, func(baseURL string) (*Response, error) {
+	resp, err := c.doWithBaseURLFallback(t.Context(), http.MethodGet, confirmHTTPStatus, func(baseURL string) (*Response, error) {
 		calls = append(calls, baseURL)
 		if baseURL == "https://html.test" {
 			return &Response{
@@ -590,7 +590,7 @@ func TestDoWithBaseURLFallbackReturnsLastHTMLResponse(t *testing.T) {
 		cookieFile: t.TempDir() + "/session.json",
 	}
 
-	resp, err := c.doWithBaseURLFallback(http.MethodGet, confirmHTTPStatus, func(baseURL string) (*Response, error) {
+	resp, err := c.doWithBaseURLFallback(t.Context(), http.MethodGet, confirmHTTPStatus, func(baseURL string) (*Response, error) {
 		return &Response{
 			StatusCode: http.StatusOK,
 			Body:       []byte("<html>" + baseURL + "</html>"),

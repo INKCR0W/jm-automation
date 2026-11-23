@@ -131,7 +131,7 @@ func TestRedirectCookiesUseEachResponseURLForDefaultPath(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c, err := NewEphemeral(server.URL, 2*time.Second)
+	c, err := NewEphemeral(t.Context(), server.URL, 2*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestResponseCookieClearsMirrorAVS(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 
-			c, err := NewEphemeral(server.URL, 2*time.Second)
+			c, err := NewEphemeral(t.Context(), server.URL, 2*time.Second)
 			if err != nil {
 				t.Fatal(err)
 			}

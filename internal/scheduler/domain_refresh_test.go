@@ -74,6 +74,7 @@ func TestRefreshKeepsWorkingDomainUntilNewCandidatePassesProbe(t *testing.T) {
 	t.Cleanup(func() { api.HostConfigURLs = previousMirrors })
 
 	s := &Scheduler{
+		lifetime:        t.Context(),
 		config:          &config.Config{Server: config.ServerConfig{Timeout: 2}},
 		clientMap:       make(map[string]*client.Client),
 		baseURLs:        []string{old.URL},

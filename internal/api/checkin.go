@@ -52,7 +52,7 @@ func (a *CheckInAPI) GetDailyList(ctx context.Context) (*DailyListData, error) {
 		return nil, fmt.Errorf("解析任务列表失败: %w", err)
 	}
 
-	a.client.ConfirmBaseURL(resp)
+	a.client.ConfirmBaseURL(ctx, resp)
 	logger.Info("获取任务列表成功", "count", len(dailyList.List))
 
 	return &dailyList, nil
@@ -80,7 +80,7 @@ func (a *CheckInAPI) DailyCheckIn(ctx context.Context, dailyID string) (*DailyCh
 
 	result, err := parseDailyCheckInResponse(plaintext)
 	if err == nil && result.Success {
-		a.client.ConfirmBaseURL(resp)
+		a.client.ConfirmBaseURL(ctx, resp)
 	}
 	return result, err
 }

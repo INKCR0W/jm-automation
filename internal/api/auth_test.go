@@ -155,7 +155,7 @@ func newAuthTestClient(t *testing.T) *client.Client {
 	t.Cleanup(func() { _ = os.Chdir(wd) })
 
 	username := fmt.Sprintf("auth_test_%d", time.Now().UnixNano())
-	c, err := client.New("https://example.test", time.Second, username)
+	c, err := client.New(t.Context(), "https://example.test", time.Second, username)
 	if err != nil {
 		t.Fatalf("new client failed: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestLoginReplacesStoredAVSWithLoginBody(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 
-			c, err := client.NewEphemeral(server.URL, 2*time.Second)
+			c, err := client.NewEphemeral(t.Context(), server.URL, 2*time.Second)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -79,7 +79,7 @@ func TestLoginRoutesByConfirmedCachedSession(t *testing.T) {
 			}))
 			t.Cleanup(backup.Close)
 
-			c, err := client.NewEphemeral(primary.URL, 2*time.Second)
+			c, err := client.NewEphemeral(t.Context(), primary.URL, 2*time.Second)
 			if err != nil {
 				t.Fatal(err)
 			}
