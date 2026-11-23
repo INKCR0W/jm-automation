@@ -359,7 +359,8 @@ type cookieValidationPolicy struct {
 
 func (c *Client) cookieValidationPolicy() cookieValidationPolicy {
 	var policy cookieValidationPolicy
-	for _, base := range c.requestBaseURLs() {
+	baseURLs, _ := c.requestBaseURLs()
+	for _, base := range baseURLs {
 		u, ok := parseBaseURL(base)
 		if !ok {
 			continue

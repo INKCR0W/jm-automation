@@ -51,9 +51,9 @@ type Resolution struct {
 	Live     bool // 有没有域名探活通过
 }
 
-// 啥都没查出来，只剩内置兜底，这种结果不该覆盖之前解析到的好候选
+// Degraded 表示本轮没有探活成功的候选
 func (r Resolution) Degraded() bool {
-	return !r.Remote && !r.Live
+	return !r.Live
 }
 
 // 配置里的域名也要探活，域名不定期下线，失效的钉在第一位会让每个请求先白等一次超时

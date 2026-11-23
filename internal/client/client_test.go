@@ -548,7 +548,7 @@ func TestDoWithBaseURLFallbackRetriesHTMLAndPromotesWorkingBaseURL(t *testing.T)
 	}
 
 	calls := make([]string, 0, 2)
-	resp, err := c.doWithBaseURLFallback(http.MethodGet, func(baseURL string) (*Response, error) {
+	resp, err := c.doWithBaseURLFallback(http.MethodGet, confirmHTTPStatus, func(baseURL string) (*Response, error) {
 		calls = append(calls, baseURL)
 		if baseURL == "https://html.test" {
 			return &Response{
@@ -590,7 +590,7 @@ func TestDoWithBaseURLFallbackReturnsLastHTMLResponse(t *testing.T) {
 		cookieFile: t.TempDir() + "/session.json",
 	}
 
-	resp, err := c.doWithBaseURLFallback(http.MethodGet, func(baseURL string) (*Response, error) {
+	resp, err := c.doWithBaseURLFallback(http.MethodGet, confirmHTTPStatus, func(baseURL string) (*Response, error) {
 		return &Response{
 			StatusCode: http.StatusOK,
 			Body:       []byte("<html>" + baseURL + "</html>"),

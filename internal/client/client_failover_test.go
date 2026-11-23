@@ -69,6 +69,42 @@ func TestGetPreservesLastFailedGatewayResponse(t *testing.T) {
 	}
 }
 
+func TestGetReturnsBackupHTTPErrorWithoutPromotingIt(t *testing.T) {
+	primary := newFailoverTestServer(t, http.StatusBadGateway, "bad gateway")
+	backup := newFailoverTestServer(t, http.StatusTooManyRequests, "rate limited")
+	c := newFailoverTestClient(t, primary.URL, backup.URL)
+
+	resp, err := c.Get(t.Context(), "/favorite", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusTooManyRequests || string(resp.Body) != "rate limited" {
+		t.Fatalf("response = %d %q, want the backup's error", resp.StatusCode, resp.Body)
+	}
+	if got := c.BaseURL(); got != primary.URL {
+		t.Fatalf("base URL = %s, want %s", got, primary.URL)
+	}
+}
+
+func TestConfirmBaseURLCannotRestoreRemovedCandidate(t *testing.T) {
+	primary := newFailoverTestServer(t, http.StatusBadGateway, "bad gateway")
+	backup := newFailoverTestServer(t, http.StatusOK, "backup")
+	c := newFailoverTestClient(t, primary.URL, backup.URL)
+
+	resp, err := c.GetWithToken(t.Context(), "/favorite", 123, "2.0.20")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("request = %v, %v, want successful backup response", resp, err)
+	}
+	if got := c.BaseURL(); got != primary.URL {
+		t.Fatalf("unconfirmed base URL = %s, want %s", got, primary.URL)
+	}
+	c.SetBaseURLs([]string{primary.URL})
+	c.ConfirmBaseURL(resp)
+	if got := c.BaseURL(); got != primary.URL {
+		t.Fatalf("base URL after confirming stale response = %s, want %s", got, primary.URL)
+	}
+}
+
 func TestPostFormDoesNotReplayGatewayResponse(t *testing.T) {
 	primary := newFailoverTestServer(t, http.StatusServiceUnavailable, "unavailable")
 	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

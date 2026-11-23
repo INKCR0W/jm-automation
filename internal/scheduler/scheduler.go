@@ -64,9 +64,8 @@ func (s *Scheduler) refreshBaseURLs(ctx context.Context) {
 	}
 
 	resolution := resolve(ctx, s.config.Server.BaseURL)
-	// 这轮啥都没查出来，手里那份比内置兜底靠谱，别覆盖
 	if resolution.Degraded() {
-		logger.Warn("域名解析未取得有效结果，沿用现有候选")
+		logger.Warn("本轮无 API 域名探活成功，沿用现有候选", "remote_config", resolution.Remote)
 		return
 	}
 

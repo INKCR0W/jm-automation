@@ -290,7 +290,7 @@ func TestResolutionDegraded(t *testing.T) {
 		wantIt bool
 	}{
 		{"啥都没拿到", Resolution{}, true},
-		{"远程配置拿到了", Resolution{Remote: true}, false},
+		{"远程配置拿到了，但探活失败", Resolution{Remote: true}, true},
 		{"探活通了", Resolution{Live: true}, false},
 		{"都拿到了", Resolution{Remote: true, Live: true}, false},
 	}

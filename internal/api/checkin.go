@@ -52,6 +52,7 @@ func (a *CheckInAPI) GetDailyList(ctx context.Context) (*DailyListData, error) {
 		return nil, fmt.Errorf("解析任务列表失败: %w", err)
 	}
 
+	a.client.ConfirmBaseURL(resp)
 	logger.Info("获取任务列表成功", "count", len(dailyList.List))
 
 	return &dailyList, nil
@@ -77,6 +78,14 @@ func (a *CheckInAPI) DailyCheckIn(ctx context.Context, dailyID string) (*DailyCh
 		return nil, fmt.Errorf("解密签到响应失败: %w", err)
 	}
 
+	result, err := parseDailyCheckInResponse(plaintext)
+	if err == nil && result.Success {
+		a.client.ConfirmBaseURL(resp)
+	}
+	return result, err
+}
+
+func parseDailyCheckInResponse(plaintext string) (*DailyChkData, error) {
 	// 如果返回空字符串，可能是已经签到过了或签到成功但无返回数据
 	if plaintext == "" || plaintext == "{}" {
 		logger.Info("签到完成（空响应，可能已签到或签到成功）")

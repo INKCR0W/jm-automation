@@ -39,8 +39,11 @@ type Client struct {
 	httpClient interface {
 		Do(*http.Request) (*http.Response, error)
 	}
-	baseURL    string
-	baseURLs   []string
+
+	baseURL         string
+	baseURLs        []string
+	baseURLRevision uint64
+
 	timeout    time.Duration
 	cookies    []sessionCookie
 	saveMu     sync.Mutex
@@ -56,7 +59,22 @@ type Response struct {
 	Body       []byte
 	Headers    http.Header
 	RequestURL *url.URL
+
+	baseURLSelection baseURLSelection
 }
+
+type baseURLSelection struct {
+	client   *Client
+	baseURL  string
+	revision uint64
+}
+
+type baseURLConfirmation uint8
+
+const (
+	confirmHTTPStatus baseURLConfirmation = iota
+	confirmAPIResult
+)
 
 // CookieData Cookie 持久化数据结构
 type CookieData struct {
@@ -139,6 +157,7 @@ func (c *Client) SetBaseURLs(baseURLs []string) {
 	if len(c.baseURLs) > 0 {
 		c.baseURL = c.baseURLs[0]
 	}
+	c.baseURLRevision++
 }
 
 func (c *Client) BaseURL() string {
@@ -148,17 +167,34 @@ func (c *Client) BaseURL() string {
 	return c.baseURL
 }
 
-// GetWithToken 发送带 token 的 GET 请求
+// ConfirmBaseURL 在业务调用确认响应成功后将产生它的备用候选设为首选
+func (c *Client) ConfirmBaseURL(resp *Response) {
+	selection := resp.baseURLSelection
+	if selection.client != c {
+		return
+	}
+
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+
+	// 更新候选或首选后，旧请求的结果不能再次覆盖首选
+	if selection.revision == c.baseURLRevision {
+		c.baseURL = selection.baseURL
+		c.baseURLRevision++
+	}
+}
+
+// GetWithToken 发送带 token 的 GET 请求，调用方验证业务结果后可确认首选域名
 func (c *Client) GetWithToken(ctx context.Context, path string, ts int64, appVersion string) (*Response, error) {
 	token, tokenparam := crypto.TokenAndTokenParam(ts, appVersion)
 	headers := map[string]string{
 		"token":      token,
 		"tokenparam": tokenparam,
 	}
-	return c.Get(ctx, path, headers)
+	return c.doRequest(ctx, http.MethodGet, path, nil, headers, confirmAPIResult)
 }
 
-// PostFormWithToken 发送带 token 的 POST 表单请求
+// PostFormWithToken 发送带 token 的 POST 表单请求，调用方验证业务结果后可确认首选域名
 func (c *Client) PostFormWithToken(ctx context.Context, path string, formData map[string]string, ts int64, appVersion string) (*Response, error) {
 	token, tokenparam := crypto.TokenAndTokenParam(ts, appVersion)
 	headers := map[string]string{
@@ -166,11 +202,15 @@ func (c *Client) PostFormWithToken(ctx context.Context, path string, formData ma
 		"tokenparam":   tokenparam,
 		"Content-Type": "application/x-www-form-urlencoded",
 	}
-	return c.PostForm(ctx, path, formData, headers)
+	return c.postForm(ctx, path, formData, headers, confirmAPIResult)
 }
 
 // PostForm 发送 POST 表单请求
 func (c *Client) PostForm(ctx context.Context, path string, formData map[string]string, headers map[string]string) (*Response, error) {
+	return c.postForm(ctx, path, formData, headers, confirmHTTPStatus)
+}
+
+func (c *Client) postForm(ctx context.Context, path string, formData map[string]string, headers map[string]string, confirmation baseURLConfirmation) (*Response, error) {
 	// 构建 form data
 	values := url.Values{}
 	for k, v := range formData {
@@ -178,7 +218,9 @@ func (c *Client) PostForm(ctx context.Context, path string, formData map[string]
 	}
 	body := values.Encode()
 
-	return c.doRequestRaw(ctx, http.MethodPost, path, body, headers)
+	return c.doWithBaseURLFallback(http.MethodPost, confirmation, func(baseURL string) (*Response, error) {
+		return c.doRequestRawOnce(ctx, http.MethodPost, baseURL, path, body, headers)
+	})
 }
 
 // DecryptResponse 解密 API 响应
@@ -233,17 +275,11 @@ func decryptResponse(resp *Response, ts int64, allowEmptyData bool) (string, err
 }
 
 func (c *Client) Get(ctx context.Context, path string, headers map[string]string) (*Response, error) {
-	return c.doRequest(ctx, http.MethodGet, path, nil, headers)
+	return c.doRequest(ctx, http.MethodGet, path, nil, headers, confirmHTTPStatus)
 }
 
 func (c *Client) Post(ctx context.Context, path string, body interface{}, headers map[string]string) (*Response, error) {
-	return c.doRequest(ctx, http.MethodPost, path, body, headers)
-}
-
-func (c *Client) doRequestRaw(ctx context.Context, method, path, body string, headers map[string]string) (*Response, error) {
-	return c.doWithBaseURLFallback(method, func(baseURL string) (*Response, error) {
-		return c.doRequestRawOnce(ctx, method, baseURL, path, body, headers)
-	})
+	return c.doRequest(ctx, http.MethodPost, path, body, headers, confirmHTTPStatus)
 }
 
 func (c *Client) doRequestRawOnce(ctx context.Context, method, baseURL, path, body string, headers map[string]string) (*Response, error) {
@@ -324,18 +360,18 @@ func (c *Client) executeRequestOnce(ctx context.Context, opts requestOptions) (*
 	}, nil
 }
 
-func (c *Client) doRequest(ctx context.Context, method, path string, body interface{}, headers map[string]string) (*Response, error) {
-	return c.doWithBaseURLFallback(method, func(baseURL string) (*Response, error) {
+func (c *Client) doRequest(ctx context.Context, method, path string, body interface{}, headers map[string]string, confirmation baseURLConfirmation) (*Response, error) {
+	return c.doWithBaseURLFallback(method, confirmation, func(baseURL string) (*Response, error) {
 		return c.doRequestOnce(ctx, method, baseURL, path, body, headers)
 	})
 }
 
-func (c *Client) doWithBaseURLFallback(method string, execute func(baseURL string) (*Response, error)) (*Response, error) {
-	baseURLs := c.requestBaseURLs()
+func (c *Client) doWithBaseURLFallback(method string, confirmation baseURLConfirmation, execute func(baseURL string) (*Response, error)) (*Response, error) {
+	baseURLs, revision := c.requestBaseURLs()
 	var lastResp *Response
 	var lastErr error
 
-	for _, baseURL := range baseURLs {
+	for i, baseURL := range baseURLs {
 		resp, err := execute(baseURL)
 		if err != nil {
 			lastErr = err
@@ -344,7 +380,12 @@ func (c *Client) doWithBaseURLFallback(method string, execute func(baseURL strin
 		if method == http.MethodGet && isGatewayFailure(resp.StatusCode) {
 			logger.Debug("API 网关暂不可用", "status", resp.StatusCode, "base_url", baseURL)
 		} else if !looksLikeHTML(resp) {
-			c.setBaseURL(baseURL)
+			if i > 0 && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				resp.baseURLSelection = baseURLSelection{client: c, baseURL: baseURL, revision: revision}
+				if confirmation == confirmHTTPStatus {
+					c.ConfirmBaseURL(resp)
+				}
+			}
 			return resp, nil
 		}
 		lastResp = resp
@@ -386,12 +427,12 @@ func (c *Client) doRequestOnce(ctx context.Context, method, baseURL, path string
 	})
 }
 
-func (c *Client) requestBaseURLs() []string {
+func (c *Client) requestBaseURLs() ([]string, uint64) {
 	c.sessionMu.RLock()
 	defer c.sessionMu.RUnlock()
 
 	if len(c.baseURLs) == 0 {
-		return []string{c.baseURL}
+		return []string{c.baseURL}, c.baseURLRevision
 	}
 
 	out := make([]string, 0, len(c.baseURLs))
@@ -403,7 +444,7 @@ func (c *Client) requestBaseURLs() []string {
 			out = append(out, baseURL)
 		}
 	}
-	return out
+	return out, c.baseURLRevision
 }
 
 func looksLikeHTML(resp *Response) bool {
@@ -628,13 +669,6 @@ func (c *Client) getJWTTokenSnapshot() string {
 	defer c.sessionMu.RUnlock()
 
 	return c.jwtToken
-}
-
-func (c *Client) setBaseURL(baseURL string) {
-	c.sessionMu.Lock()
-	defer c.sessionMu.Unlock()
-
-	c.baseURL = baseURL
 }
 
 func (c *Client) applySession(cookies []sessionCookie, userID, username, jwtToken string) {
