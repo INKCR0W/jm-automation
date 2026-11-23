@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/INKCR0W/jm-automation/pkg/crypto"
@@ -31,6 +34,107 @@ func TestHostConfigDomainsIncludesJM3Server(t *testing.T) {
 			t.Fatalf("domains = %v, want %v", got, want)
 		}
 	}
+}
+
+func TestResolveDynamicBaseURLsTriesNextMirror(t *testing.T) {
+	key := []byte(crypto.MD5Hex(HostConfigSecret))
+	valid := encryptECB(t, []byte(`{
+		"Server": [
+			"alternate.example.net",
+			"https://example.net:65535",
+			"http://192.0.2.1:8080",
+			"https://[2001:db8::1]:443",
+			"https://[fe80::1%25eth0]",
+			"https://example.net.",
+			"https://bücher.example.",
+			"https://other。example。",
+			"https://example.net?query=1",
+			"https://user@example.net",
+			"https://example.net/path",
+			"https://example.net/#fragment"
+		],
+		"jm3_Server": [["https://extra.example.net/", "线路2"]]
+	}`), key)
+	want := append([]string{
+		"https://alternate.example.net",
+		"https://example.net:65535",
+		"http://192.0.2.1:8080",
+		"https://[2001:db8::1]:443",
+		"https://[fe80::1%25eth0]",
+		"https://example.net.",
+		"https://xn--bcher-kva.example.",
+		"https://other.example.",
+		"https://extra.example.net",
+	}, fallbackBaseURLs()...)
+
+	longLabel := strings.Repeat("a", 64) + ".net"
+	longName := strings.Repeat(strings.Repeat("a", 63)+".", 3) + strings.Repeat("b", 63)
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "不可解密", body: "<html>gateway</html>"},
+		{name: "无效 JSON", body: encryptECB(t, []byte("invalid"), key)},
+		{name: "没有域名", body: encryptECB(t, []byte(`{"Server":[]}`), key)},
+		{name: "没有合法域名", body: encryptECB(t, []byte(`{"Server":["   ","http://","not a host","ftp://example.net"]}`), key)},
+		{name: "端口超过上限", body: encryptECB(t, []byte(`{"Server":["http://127.0.0.1:65536"]}`), key)},
+		{name: "端口为零", body: encryptECB(t, []byte(`{"Server":["http://127.0.0.1:0"]}`), key)},
+		{name: "空标签", body: encryptECB(t, []byte(`{"Server":["example..net",".example.net","example.net..","example。net。。"]}`), key)},
+		{name: "首尾连字符", body: encryptECB(t, []byte(`{"Server":["-example.net","example-.net"]}`), key)},
+		{name: "标签过长", body: encryptECB(t, []byte(fmt.Sprintf(`{"Server":[%q]}`, longLabel)), key)},
+		{name: "域名过长", body: encryptECB(t, []byte(fmt.Sprintf(`{"Server":[%q]}`, longName)), key)},
+		{name: "非法 IP", body: encryptECB(t, []byte(`{"Server":["https://[2001:db8::nope]","https://[192.0.2.1]","https://999.0.0.1","https://2001:db8::1:443"]}`), key)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			primary := hostConfigServer(t, http.StatusOK, tc.body)
+			backup := hostConfigServer(t, http.StatusOK, valid)
+			withHostConfigMirrors(t, primary.URL, backup.URL)
+
+			got, remote := resolveDynamicBaseURLs(context.Background())
+			if !remote || !slices.Equal(got, want) {
+				t.Fatalf("resolveDynamicBaseURLs = (%v, %v), want (%v, true)", got, remote, want)
+			}
+		})
+	}
+}
+
+func TestResolveDynamicBaseURLsFallsBackAfterEveryMirrorFails(t *testing.T) {
+	primary := hostConfigServer(t, http.StatusOK, "malformed")
+	var backupRequests atomic.Int32
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backupRequests.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(backup.Close)
+	withHostConfigMirrors(t, primary.URL, backup.URL)
+
+	got, remote := resolveDynamicBaseURLs(context.Background())
+	if want := fallbackBaseURLs(); remote || !slices.Equal(got, want) {
+		t.Fatalf("resolveDynamicBaseURLs = (%v, %v), want (%v, false)", got, remote, want)
+	}
+	if got := backupRequests.Load(); got != 1 {
+		t.Fatalf("备用镜像收到 %d 次请求，预期 1 次", got)
+	}
+}
+
+func hostConfigServer(t *testing.T, status int, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Errorf("写入镜像响应失败: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func withHostConfigMirrors(t *testing.T, urls ...string) {
+	t.Helper()
+	previous := HostConfigURLs
+	HostConfigURLs = urls
+	t.Cleanup(func() { HostConfigURLs = previous })
 }
 
 func settingServer(t *testing.T) *httptest.Server {

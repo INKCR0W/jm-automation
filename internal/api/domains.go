@@ -5,14 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/INKCR0W/jm-automation/internal/client"
 	"github.com/INKCR0W/jm-automation/pkg/crypto"
 	"github.com/INKCR0W/jm-automation/pkg/logger"
+	"golang.org/x/net/idna"
 )
 
 type hostConfig struct {
@@ -33,6 +38,9 @@ func (c hostConfig) domains() []string {
 }
 
 const settingProbeTimeout = 8 * time.Second
+
+var hostConfigNoise = regexp.MustCompile(`[^A-Za-z0-9+/=]`)
+var remoteHostDNSLength = idna.New(idna.VerifyDNSLength(true))
 
 // 探活是串行的，候选一多会把整轮任务的时间预算吃光
 const maxProbedCandidates = 5
@@ -74,36 +82,39 @@ func ResolveDynamicBaseURLs(ctx context.Context) []string {
 
 // bool 表示远程配置是不是真取到了
 func resolveDynamicBaseURLs(ctx context.Context) ([]string, bool) {
-	raw, err := fetchHostConfig(ctx)
+	urls, err := fetchHostConfig(ctx)
 	if err != nil {
 		logger.Warn("获取远程域名配置失败，使用内置域名", "error", err)
 		return fallbackBaseURLs(), false
 	}
 
-	compact := regexp.MustCompile(`[^A-Za-z0-9+/=]`).ReplaceAllString(raw, "")
+	return uniqueStrings(append(urls, fallbackBaseURLs()...)), true
+}
+
+func decodeHostConfig(raw string) ([]string, error) {
+	compact := hostConfigNoise.ReplaceAllString(raw, "")
 	key := crypto.MD5Hex(HostConfigSecret)
 	plaintext, err := crypto.DecodeBase64ECBPKCS7(compact, key)
 	if err != nil {
-		logger.Warn("解密远程域名配置失败，使用内置域名", "error", err)
-		return fallbackBaseURLs(), false
+		return nil, fmt.Errorf("解密远程域名配置失败: %w", err)
 	}
 
 	var cfg hostConfig
 	if err := json.Unmarshal([]byte(plaintext), &cfg); err != nil {
-		logger.Warn("解析远程域名配置失败，使用内置域名", "error", err)
-		return fallbackBaseURLs(), false
+		return nil, fmt.Errorf("解析远程域名配置失败: %w", err)
 	}
 
 	domains := cfg.domains()
-	urls := make([]string, 0, len(domains)+len(DomainAPIList))
+	urls := make([]string, 0, len(domains))
 	for _, domain := range domains {
-		if u := normalizeBaseURL(domain); u != "" {
-			urls = append(urls, u)
+		if baseURL := normalizeRemoteBaseURL(domain); baseURL != "" {
+			urls = append(urls, baseURL)
 		}
 	}
-	urls = append(urls, fallbackBaseURLs()...)
-
-	return uniqueStrings(urls), true
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("远程域名配置缺少有效域名")
+	}
+	return urls, nil
 }
 
 // 探挂的要丢到没试过的后面，否则主域名开始返回 HTML 时，回退会先去撞这些已知的死域名
@@ -176,12 +187,12 @@ func probeSetting(ctx context.Context, baseURL string) error {
 	return nil
 }
 
-func fetchHostConfig(ctx context.Context) (string, error) {
+func fetchHostConfig(ctx context.Context) ([]string, error) {
 	httpClient := &http.Client{Timeout: 8 * time.Second}
 	var lastErr error
 
-	for _, url := range HostConfigURLs {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	for _, configURL := range HostConfigURLs {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, configURL, nil)
 		if err != nil {
 			lastErr = err
 			continue
@@ -203,16 +214,21 @@ func fetchHostConfig(ctx context.Context) (string, error) {
 			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			lastErr = fmt.Errorf("status=%d url=%s", resp.StatusCode, url)
+			lastErr = fmt.Errorf("status=%d url=%s", resp.StatusCode, configURL)
 			continue
 		}
-		return string(body), nil
+		urls, err := decodeHostConfig(string(body))
+		if err != nil {
+			lastErr = fmt.Errorf("url=%s: %w", configURL, err)
+			continue
+		}
+		return urls, nil
 	}
 
 	if lastErr == nil {
 		lastErr = fmt.Errorf("远程域名配置不可用")
 	}
-	return "", lastErr
+	return nil, lastErr
 }
 
 func fallbackBaseURLs() []string {
@@ -234,6 +250,52 @@ func normalizeBaseURL(raw string) string {
 		value = "https://" + value
 	}
 	return strings.TrimRight(value, "/")
+}
+
+func normalizeRemoteBaseURL(raw string) string {
+	u, parseErr := url.Parse(normalizeBaseURL(raw))
+	if parseErr != nil || u.Hostname() == "" || u.User != nil || u.Path != "" ||
+		u.ForceQuery || u.RawQuery != "" || u.Fragment != "" {
+		return ""
+	}
+
+	port := u.Port()
+	if port != "" {
+		number, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || number == 0 {
+			return ""
+		}
+	}
+
+	hostname := u.Hostname()
+	bracketed := strings.HasPrefix(u.Host, "[")
+	if ip, err := netip.ParseAddr(hostname); err == nil {
+		if bracketed != ip.Is6() {
+			return ""
+		}
+		return u.String()
+	}
+	if bracketed {
+		return ""
+	}
+
+	asciiHost, err := idna.Lookup.ToASCII(hostname)
+	if err != nil {
+		return ""
+	}
+	// IDNA 会把 Unicode 分隔符转换为点，再去掉表示绝对域名的单个根点进行校验
+	name := strings.TrimSuffix(asciiHost, ".")
+	if strings.HasSuffix(name, ".") || strings.Trim(name, "0123456789.") == "" {
+		return ""
+	}
+	if _, lengthErr := remoteHostDNSLength.ToASCII(name); lengthErr != nil {
+		return ""
+	}
+	u.Host = asciiHost
+	if port != "" {
+		u.Host = net.JoinHostPort(asciiHost, port)
+	}
+	return u.String()
 }
 
 func uniqueStrings(values []string) []string {
