@@ -17,7 +17,7 @@ RUN go mod download
 COPY . .
 
 # 编译（添加版本信息和优化）
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+RUN CGO_ENABLED=0 GOOS=linux go build \
     -a -installsuffix cgo \
     -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=${BUILD_TIME}" \
     -o jm-automation \
@@ -50,7 +50,7 @@ RUN addgroup -g 1000 appuser && \
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD pgrep -f jm-automation || exit 1
+    CMD ["pgrep", "-x", "jm-automation"]
 
 # 运行
 CMD ["/app/entrypoint.sh"]

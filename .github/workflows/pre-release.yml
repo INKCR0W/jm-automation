@@ -54,6 +54,10 @@ jobs:
     name: Build and Create Pre-release
     runs-on: ubuntu-latest
     needs: [lint, test]
+    concurrency:
+      group: publish-pre-release
+      cancel-in-progress: false
+      queue: max
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -68,7 +72,7 @@ jobs:
       - name: Generate version
         id: version
         run: |
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          LATEST_TAG=$(git describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null || echo "v0.0.0")
           SHORT_SHA=$(git rev-parse --short HEAD)
           VERSION="${LATEST_TAG}-dev-${SHORT_SHA}"
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
@@ -146,18 +150,43 @@ jobs:
           echo "$CHANGELOG" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Delete old pre-release
+      - name: Check current main commit
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete pre-release --yes || true
-          git push origin :refs/tags/pre-release || true
+          current_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          if [ -z "$current_sha" ]; then
+            echo "::error::GitHub API did not return the current main commit."
+            exit 1
+          fi
+          if [ "$current_sha" = "$GITHUB_SHA" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Skipping pre-release for $GITHUB_SHA because main is now $current_sha."
+          fi
+
+      - name: Delete old pre-release
+        if: steps.publish.outputs.ready == 'true'
+        run: |
+          remote_ref=$(git ls-remote --tags --refs origin refs/tags/pre-release)
+          old_release=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.tag_name == "pre-release") | .tag_name')
+          if [ -n "$old_release" ]; then
+            gh release delete pre-release --yes
+          fi
+          if grep -q $'\trefs/tags/pre-release$' <<< "$remote_ref"; then
+            git push origin :refs/tags/pre-release
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
 
       - name: Create pre-release
+        if: steps.publish.outputs.ready == 'true'
         uses: softprops/action-gh-release@v3
         with:
           name: Pre-release (Development Build)
           tag_name: pre-release
+          target_commitish: ${{ github.sha }}
           body: |
             ## ⚠️ 开发版本 (Pre-release)
             

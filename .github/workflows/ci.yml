@@ -68,4 +68,29 @@ jobs:
 
       - name: Test binary
         run: |
-          ./jm-automation -version || true
+          ./jm-automation -version
+
+  docker:
+    name: Docker (${{ matrix.arch }})
+    needs: [lint, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Build image
+        run: docker build --platform linux/${{ matrix.arch }} --build-arg VERSION=ci -t jm-automation:ci .
+
+      - name: Test image
+        run: |
+          version=$(docker run --rm --network none --entrypoint /app/entrypoint.sh jm-automation:ci -version)
+          printf '%s\n' "$version"
+          test "$version" = 'jm-automation ci (built at unknown)'
