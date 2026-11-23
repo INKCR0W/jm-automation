@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/INKCR0W/jm-automation/internal/client"
 	"github.com/INKCR0W/jm-automation/pkg/logger"
-	http "github.com/bogdanfinn/fhttp"
 )
 
 type AuthAPI struct {
@@ -31,8 +31,6 @@ func (a *AuthAPI) Login(ctx context.Context, username, password string) (*LoginD
 	if err != nil {
 		return nil, err
 	}
-
-	a.applyLoginSession(*loginData)
 
 	logger.Info("登录成功", "uid", loginData.UID, "username", loginData.Username, "level", loginData.Level)
 
@@ -58,7 +56,7 @@ func (a *AuthAPI) tryUseCachedSession(ctx context.Context) (*LoginData, bool) {
 	resp, err := a.client.GetWithToken(ctx, "/favorite?page=1&folder_id=0&o=mr", ts, AppVersion)
 	if err == nil && resp.StatusCode == 200 {
 		if _, err := a.client.DecryptResponse(resp, ts); err == nil {
-			a.avs = findCookieValue(a.client.GetCookies(), "AVS")
+			a.avs = a.client.CookieValue(resp.RequestURL, "AVS")
 			a.userID = cachedUserID
 			logger.Info("使用已保存的登录状态成功", "uid", cachedUserID, "username", cachedUsername)
 
@@ -101,6 +99,7 @@ func (a *AuthAPI) loginWithCredentials(ctx context.Context, username, password s
 		return nil, err
 	}
 
+	a.applyLoginSession(loginData, resp.RequestURL)
 	return &loginData, nil
 }
 
@@ -123,34 +122,17 @@ func parseLoginResponse(plaintext, fallbackUsername string) (LoginData, error) {
 	return loginData, nil
 }
 
-func (a *AuthAPI) applyLoginSession(loginData LoginData) {
+func (a *AuthAPI) applyLoginSession(loginData LoginData, source *url.URL) {
 	a.avs = loginData.S
 	a.userID = loginData.UID
 
-	cookie := &http.Cookie{
-		Name:  "AVS",
-		Value: a.avs,
-		Path:  "/",
-	}
-
-	allCookies := a.client.GetCookies()
-	allCookies = append(allCookies, cookie)
-	a.client.SetCookies(allCookies)
+	a.client.SetLoginAVS(source, a.avs)
 
 	if loginData.JWTToken != "" {
 		a.client.SetJWTToken(loginData.JWTToken)
 	}
 
 	a.client.SetUserInfo(loginData.UID, loginData.Username)
-}
-
-func findCookieValue(cookies []*http.Cookie, name string) string {
-	for _, cookie := range cookies {
-		if cookie.Name == name {
-			return cookie.Value
-		}
-	}
-	return ""
 }
 
 func (a *AuthAPI) GetUserID() string {

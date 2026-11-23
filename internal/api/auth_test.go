@@ -1,13 +1,24 @@
 package api
 
 import (
+	"bytes"
+	"context"
+	"crypto/aes"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/INKCR0W/jm-automation/internal/client"
+	"github.com/INKCR0W/jm-automation/pkg/crypto"
+	fhttp "github.com/bogdanfinn/fhttp"
 )
 
 func TestParseLoginResponse(t *testing.T) {
@@ -102,7 +113,7 @@ func TestApplyLoginSessionStoresAuthState(t *testing.T) {
 		JWTToken: "jwt-token",
 	}
 
-	authAPI.applyLoginSession(loginData)
+	authAPI.applyLoginSession(loginData, nil)
 
 	if got := authAPI.GetUserID(); got != "42" {
 		t.Fatalf("AuthAPI userID = %q, want 42", got)
@@ -150,4 +161,103 @@ func newAuthTestClient(t *testing.T) *client.Client {
 	}
 
 	return c
+}
+
+func TestLoginReplacesStoredAVSWithLoginBody(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		hasDomainAVS bool
+		hasWireAVS   bool
+	}{
+		{name: "stored host-only AVS"},
+		{name: "stored explicit Domain AVS", hasDomainAVS: true},
+		{name: "AVS also set by login response", hasWireAVS: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/seed":
+					http.SetCookie(w, &http.Cookie{Name: "AVS", Value: "stale", Path: "/"})
+				case PathLogin:
+					http.Redirect(w, r, "/auth/complete", http.StatusTemporaryRedirect)
+				case "/auth/complete":
+					if r.Method != http.MethodPost {
+						t.Errorf("login method = %q, want POST", r.Method)
+					}
+					if tc.hasWireAVS {
+						http.SetCookie(w, &http.Cookie{Name: "AVS", Value: "wire", Path: "/", HttpOnly: true})
+					}
+					writeTestLoginResponse(t, w, r)
+				case "/cookie":
+					_, _ = io.WriteString(w, r.Header.Get("Cookie"))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(server.Close)
+
+			c, err := client.NewEphemeral(server.URL, 2*time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.Background()
+			if tc.hasDomainAVS {
+				origin, parseErr := url.Parse(server.URL)
+				if parseErr != nil {
+					t.Fatal(parseErr)
+				}
+				c.SetCookies([]*fhttp.Cookie{{Name: "AVS", Value: "stale", Path: "/", Domain: origin.Hostname()}})
+			} else if _, seedErr := c.Get(ctx, "/seed", nil); seedErr != nil {
+				t.Fatal(seedErr)
+			}
+			auth := NewAuthAPI(c)
+			if _, loginErr := auth.Login(ctx, "test-user", "test-password"); loginErr != nil {
+				t.Fatal(loginErr)
+			}
+			resp, err := c.Get(ctx, "/cookie", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := string(resp.Body); got != "AVS=body" {
+				t.Fatalf("Cookie = %q, want AVS=body", got)
+			}
+			if tc.hasWireAVS {
+				for _, cookie := range c.GetCookies() {
+					if cookie.Name == "AVS" && cookie.Value == "wire" && cookie.HttpOnly {
+						return
+					}
+				}
+				t.Fatal("login body changed the wire cookie or its HttpOnly attribute")
+			}
+		})
+	}
+}
+
+func writeTestLoginResponse(t *testing.T, w http.ResponseWriter, req *http.Request) {
+	t.Helper()
+	ts, _, ok := strings.Cut(req.Header.Get("tokenparam"), ",")
+	if !ok {
+		t.Error("login request is missing tokenparam")
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	block, err := aes.NewCipher([]byte(crypto.MD5Hex(ts + crypto.AppDataSecret)))
+	if err != nil {
+		t.Errorf("create login response cipher: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	payload := []byte("{\"uid\":\"42\",\"username\":\"test-user\",\"s\":\"body\"}")
+	padding := aes.BlockSize - len(payload)%aes.BlockSize
+	payload = append(payload, bytes.Repeat([]byte{byte(padding)}, padding)...)
+	for offset := 0; offset < len(payload); offset += aes.BlockSize {
+		block.Encrypt(payload[offset:offset+aes.BlockSize], payload[offset:offset+aes.BlockSize])
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string]any{
+		"code": 200,
+		"data": base64.StdEncoding.EncodeToString(payload),
+	}); err != nil {
+		t.Errorf("write login response: %v", err)
+	}
 }

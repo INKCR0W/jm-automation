@@ -19,9 +19,6 @@ import (
 	"github.com/INKCR0W/jm-automation/internal/config"
 	"github.com/INKCR0W/jm-automation/pkg/logger"
 	http "github.com/bogdanfinn/fhttp"
-	tls_client "github.com/bogdanfinn/tls-client"
-	"github.com/bogdanfinn/tls-client/bandwidth"
-	"golang.org/x/net/proxy"
 )
 
 func TestLoadCookiesSupportsJWTOnlySession(t *testing.T) {
@@ -267,10 +264,10 @@ func TestDecryptResponseRejectsMalformedResponses(t *testing.T) {
 func TestDoRequestOnceBuildsJSONRequest(t *testing.T) {
 	stub := &stubHTTPClient{}
 	c := &Client{
-		httpClient: stub,
 		baseURL:    "https://example.test",
 		cookieFile: t.TempDir() + "/session.json",
 	}
+	c.useStubHTTPClient(stub)
 	c.applySession(nil, "", "", "jwt-123")
 
 	resp, err := c.doRequestOnce(
@@ -316,11 +313,11 @@ func TestDoRequestRawOncePreservesRawBodyAndCookies(t *testing.T) {
 		},
 	}
 	c := &Client{
-		httpClient: stub,
 		baseURL:    "https://example.test",
 		cookieFile: t.TempDir() + "/session.json",
 	}
-	c.setCookies([]*http.Cookie{{Name: "remember", Value: "cookie-token"}})
+	c.useStubHTTPClient(stub)
+	c.SetCookies([]*http.Cookie{{Name: "remember", Value: "cookie-token"}})
 
 	requestStartedAt := time.Now()
 	_, err := c.doRequestRawOnce(
@@ -371,7 +368,7 @@ func TestRequestsOnlySendMatchingCookies(t *testing.T) {
 		{Name: "invalid", Value: "session", Domain: "example.test."},
 		{Name: "expired", Value: "session", MaxAge: 60},
 	}
-	normalizeResponseCookieExpirations(cookies, time.Now().Add(-time.Hour))
+	normalizeResponseCookieExpiry(cookies[len(cookies)-1], time.Now().Add(-time.Hour))
 	tests := []struct {
 		name    string
 		baseURL string
@@ -382,13 +379,13 @@ func TestRequestsOnlySendMatchingCookies(t *testing.T) {
 			name:    "matching HTTPS subdomain and child path",
 			baseURL: "https://api.example.test:8443",
 			path:    "/private/page",
-			want:    "AVS=legacy; secure=session; domain=session; path=session",
+			want:    "path=session; AVS=legacy; secure=session; domain=session",
 		},
 		{
 			name:    "same domain over HTTP",
 			baseURL: "http://example.test",
 			path:    "/private",
-			want:    "AVS=legacy; domain=session; path=session",
+			want:    "path=session; AVS=legacy; domain=session",
 		},
 		{
 			name:    "unrelated mirror and nonmatching path prefix",
@@ -400,7 +397,7 @@ func TestRequestsOnlySendMatchingCookies(t *testing.T) {
 			name:    "matching escaped path",
 			baseURL: "https://api.example.test",
 			path:    "/a%20b/favorite",
-			want:    "AVS=legacy; secure=session; domain=session; encoded=session",
+			want:    "encoded=session; AVS=legacy; secure=session; domain=session",
 		},
 		{
 			name:    "escaped slash is not a path separator",
@@ -430,7 +427,9 @@ func TestRequestsOnlySendMatchingCookies(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stub := &stubHTTPClient{}
-			c := &Client{httpClient: stub, baseURL: tt.baseURL, cookies: cookies}
+			c := &Client{baseURL: tt.baseURL}
+			c.useStubHTTPClient(stub)
+			c.SetCookies(cookies)
 			if _, err := c.Get(context.Background(), tt.path, nil); err != nil {
 				t.Fatal(err)
 			}
@@ -473,12 +472,8 @@ func TestRedirectKeepsCookiesForCanonicalSameHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &Client{cookies: []*http.Cookie{{Name: "AVS", Value: "legacy"}}}
-	if err := c.checkRedirect(redirected, []*http.Request{initial}); err != nil {
+	if err := checkRedirect(redirected, []*http.Request{initial}); err != nil {
 		t.Fatal(err)
-	}
-	if got := redirected.Header.Get("Cookie"); got != "AVS=legacy" {
-		t.Fatalf("redirected Cookie = %q, want AVS=legacy", got)
 	}
 }
 
@@ -486,7 +481,7 @@ func TestRedirectRechecksCookiePath(t *testing.T) {
 	server := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		switch r.URL.Path {
 		case "/private/start":
-			if got := r.Header.Get("Cookie"); got != "AVS=legacy; path=session" {
+			if got := r.Header.Get("Cookie"); got != "path=session; AVS=legacy" {
 				t.Errorf("initial Cookie = %q", got)
 			}
 			stdhttp.Redirect(w, r, "/public", stdhttp.StatusFound)
@@ -502,7 +497,7 @@ func TestRedirectRechecksCookiePath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.setCookies([]*http.Cookie{
+	c.SetCookies([]*http.Cookie{
 		{Name: "AVS", Value: "legacy"},
 		{Name: "path", Value: "session", Path: "/private"},
 	})
@@ -539,7 +534,7 @@ func TestRedirectDoesNotRestoreCookiesOnUnrelatedHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.setCookies([]*http.Cookie{{Name: "AVS", Value: "legacy"}})
+	c.SetCookies([]*http.Cookie{{Name: "AVS", Value: "legacy"}})
 	if _, err := c.Get(context.Background(), "/start", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -617,12 +612,9 @@ func TestDoWithBaseURLFallbackReturnsLastHTMLResponse(t *testing.T) {
 }
 
 func TestClientConcurrentCookieAccessIsRaceFree(t *testing.T) {
-	c := &Client{
-		httpClient: &stubHTTPClient{},
-		baseURL:    "https://example.test",
-		cookieFile: t.TempDir() + "/session.json",
-	}
-	c.cookies = []*http.Cookie{{Name: "remember", Value: "initial"}}
+	c := &Client{baseURL: "https://example.test"}
+	c.useStubHTTPClient(&stubHTTPClient{})
+	c.SetCookies([]*http.Cookie{{Name: "remember", Value: "initial"}})
 
 	ctx := context.Background()
 	start := make(chan struct{})
@@ -685,17 +677,15 @@ func (s *stubHTTPClient) lastRequest(t *testing.T) capturedRequest {
 	return s.requests[len(s.requests)-1]
 }
 
-func (s *stubHTTPClient) GetCookies(_ *url.URL) []*http.Cookie    { return nil }
-func (s *stubHTTPClient) SetCookies(_ *url.URL, _ []*http.Cookie) {}
-func (s *stubHTTPClient) SetCookieJar(_ http.CookieJar)           {}
-func (s *stubHTTPClient) GetCookieJar() http.CookieJar            { return nil }
-func (s *stubHTTPClient) SetProxy(_ string) error                 { return nil }
-func (s *stubHTTPClient) GetProxy() string                        { return "" }
-func (s *stubHTTPClient) SetFollowRedirect(_ bool)                {}
-func (s *stubHTTPClient) GetFollowRedirect() bool                 { return false }
-func (s *stubHTTPClient) CloseIdleConnections()                   {}
-func (s *stubHTTPClient) Close()                                  {}
-func (s *stubHTTPClient) Do(req *http.Request) (*http.Response, error) {
+func (c *Client) useStubHTTPClient(stub *stubHTTPClient) {
+	c.httpClient = &http.Client{
+		Transport:     stub,
+		Jar:           sessionCookieJar{c},
+		CheckRedirect: checkRedirect,
+	}
+}
+
+func (s *stubHTTPClient) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req == nil {
 		return nil, errors.New("request is nil")
 	}
@@ -728,18 +718,6 @@ func (s *stubHTTPClient) Do(req *http.Request) (*http.Response, error) {
 		Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
 	}, nil
 }
-func (s *stubHTTPClient) Get(_ string) (*http.Response, error)  { return s.Do(nil) }
-func (s *stubHTTPClient) Head(_ string) (*http.Response, error) { return s.Do(nil) }
-func (s *stubHTTPClient) Post(_ string, _ string, _ io.Reader) (*http.Response, error) {
-	return s.Do(nil)
-}
-func (s *stubHTTPClient) GetBandwidthTracker() bandwidth.BandwidthTracker       { return nil }
-func (s *stubHTTPClient) GetDialer() proxy.ContextDialer                        { return nil }
-func (s *stubHTTPClient) GetTLSDialer() tls_client.TLSDialerFunc                { return nil }
-func (s *stubHTTPClient) AddPreRequestHook(_ tls_client.PreRequestHookFunc)     {}
-func (s *stubHTTPClient) AddPostResponseHook(_ tls_client.PostResponseHookFunc) {}
-func (s *stubHTTPClient) ResetPreHooks()                                        {}
-func (s *stubHTTPClient) ResetPostHooks()                                       {}
 
 func initClientTestLogger(t *testing.T) {
 	t.Helper()

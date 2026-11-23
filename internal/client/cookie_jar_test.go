@@ -1,8 +1,17 @@
 package client
 
 import (
+	"errors"
+	"fmt"
 	"math"
+	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -23,7 +32,7 @@ func TestAppendCookiesDoesNotGrowOnRepeatedResponses(t *testing.T) {
 
 	longValue := strings.Repeat("a", 218)
 	for range 500 {
-		c.appendCookies([]*http.Cookie{
+		setTestResponseCookies(t, c, "https://api.example.test/root", []*http.Cookie{
 			{Name: "remember", Value: longValue},
 			{Name: "remember_id", Value: longValue},
 			{Name: "AVS", Value: "avs-value-0123456789012345"},
@@ -42,11 +51,11 @@ func TestAppendCookiesDoesNotGrowOnRepeatedResponses(t *testing.T) {
 func TestAppendCookiesOverwritesValueAndKeepsOrder(t *testing.T) {
 	c := &Client{}
 
-	c.appendCookies([]*http.Cookie{
+	setTestResponseCookies(t, c, "https://api.example.test/root", []*http.Cookie{
 		{Name: "ipcountry", Value: "TW"},
 		{Name: "AVS", Value: "old"},
 	})
-	c.appendCookies([]*http.Cookie{
+	setTestResponseCookies(t, c, "https://api.example.test/root", []*http.Cookie{
 		{Name: "AVS", Value: "new"},
 		{Name: "theme", Value: "dark"},
 	})
@@ -72,8 +81,8 @@ func TestAppendCookiesOverwritesValueAndKeepsOrder(t *testing.T) {
 func TestAppendCookiesTreatsEmptyPathAsRoot(t *testing.T) {
 	c := &Client{}
 
-	c.appendCookies([]*http.Cookie{{Name: "AVS", Value: "from-server", Path: "/"}})
-	c.appendCookies([]*http.Cookie{{Name: "AVS", Value: "from-login", Path: ""}})
+	setTestResponseCookies(t, c, "https://api.example.test/root", []*http.Cookie{{Name: "AVS", Value: "from-server", Path: "/"}})
+	setTestResponseCookies(t, c, "https://api.example.test/root", []*http.Cookie{{Name: "AVS", Value: "from-login", Path: ""}})
 
 	got := c.GetCookies()
 	if len(got) != 1 {
@@ -87,10 +96,12 @@ func TestAppendCookiesTreatsEmptyPathAsRoot(t *testing.T) {
 func TestAppendCookiesKeepsDistinctDomainAndPath(t *testing.T) {
 	c := &Client{}
 
-	c.appendCookies([]*http.Cookie{
-		{Name: "AVS", Value: "a", Domain: "www.cdnhjk.net", Path: "/"},
-		{Name: "AVS", Value: "b", Domain: "www.cdngwc.cc", Path: "/"},
-		{Name: "AVS", Value: "c", Domain: "www.cdnhjk.net", Path: "/sub"},
+	setTestResponseCookies(t, c, "https://one.example.test", []*http.Cookie{
+		{Name: "AVS", Value: "a", Path: "/"},
+		{Name: "AVS", Value: "c", Path: "/sub"},
+	})
+	setTestResponseCookies(t, c, "https://two.example.test", []*http.Cookie{
+		{Name: "AVS", Value: "b", Path: "/"},
 	})
 
 	if got := c.GetCookies(); len(got) != 3 {
@@ -117,7 +128,7 @@ func TestAppendCookiesTreatsIDNDomainFormsAsOneCookie(t *testing.T) {
 			}
 			assertCookieNames(t, c.GetCookies(), []string{"AVS"})
 
-			c.appendCookies([]*http.Cookie{
+			setTestResponseCookies(t, c, "https://xn--bcher-kva.example", []*http.Cookie{
 				{Name: "AVS", Value: "updated", Domain: ".xn--bcher-kva.example", Path: "/", MaxAge: tt.maxAge},
 			})
 			cookies := c.GetCookies()
@@ -131,34 +142,31 @@ func TestAppendCookiesTreatsIDNDomainFormsAsOneCookie(t *testing.T) {
 	}
 }
 
-func TestAppendCookiesKeepsInvalidDomainSeparateFromEmptyDomain(t *testing.T) {
+func TestResponseCookieRejectsInvalidExplicitDomain(t *testing.T) {
 	c := &Client{}
-	c.appendCookies([]*http.Cookie{
-		{Name: "AVS", Value: "legacy"},
-		{Name: "AVS", Value: "invalid", Domain: "bad domain"},
-	})
-	if got := c.GetCookies(); len(got) != 2 {
-		t.Fatalf("cookie count = %d, want 2", len(got))
-	}
+	setTestResponseCookies(t, c, "https://api.example.test", []*http.Cookie{{Name: "AVS", Value: "host-only"}})
 
-	c.appendCookies([]*http.Cookie{
-		{Name: "AVS", Domain: ".BAD DOMAIN", MaxAge: -1},
-	})
+	for _, domain := range []string{".", "bad domain", "other.example.test", ".test"} {
+		setTestResponseCookies(t, c, "https://api.example.test", []*http.Cookie{
+			{Name: "AVS", Value: "invalid", Domain: domain},
+			{Name: "AVS", Domain: domain, MaxAge: -1},
+		})
+	}
 	cookies := c.GetCookies()
 	assertCookieNames(t, cookies, []string{"AVS"})
-	if cookies[0].Domain != "" || cookies[0].Value != "legacy" {
-		t.Fatalf("remaining AVS domain = %q, value = %q, want empty domain and legacy value", cookies[0].Domain, cookies[0].Value)
+	if cookies[0].Domain != "" || cookies[0].Value != "host-only" {
+		t.Fatalf("remaining AVS domain = %q, value = %q, want empty domain and host-only value", cookies[0].Domain, cookies[0].Value)
 	}
 }
 
 func TestAppendCookiesHonorsDeletion(t *testing.T) {
 	c := &Client{}
-	c.appendCookies([]*http.Cookie{
+	setTestResponseCookies(t, c, "https://api.example.test/root", []*http.Cookie{
 		{Name: "AVS", Value: "value"},
 		{Name: "theme", Value: "dark"},
 	})
 
-	c.appendCookies([]*http.Cookie{{Name: "AVS", Value: "", MaxAge: -1}})
+	setTestResponseCookies(t, c, "https://api.example.test/root", []*http.Cookie{{Name: "AVS", Value: "", MaxAge: -1}})
 
 	got := c.GetCookies()
 	if len(got) != 1 || got[0].Name != "theme" {
@@ -168,7 +176,7 @@ func TestAppendCookiesHonorsDeletion(t *testing.T) {
 
 func TestAppendCookiesKeepsPositiveMaxAgeWithPastExpires(t *testing.T) {
 	c := &Client{}
-	c.appendCookies([]*http.Cookie{{
+	setTestResponseCookies(t, c, "https://api.example.test/root", []*http.Cookie{{
 		Name:    "AVS",
 		Value:   "value",
 		MaxAge:  3600,
@@ -191,7 +199,9 @@ func TestResponseCookieLifetimesUseReceiptTime(t *testing.T) {
 		{Name: "long", MaxAge: math.MaxInt},
 	}
 
-	normalizeResponseCookieExpirations(cookies, receivedAt)
+	for _, cookie := range cookies {
+		normalizeResponseCookieExpiry(cookie, receivedAt)
+	}
 
 	for _, cookie := range cookies[:2] {
 		if cookie.MaxAge != 0 || !cookie.Expires.Equal(receivedAt.Add(time.Minute)) {
@@ -210,9 +220,9 @@ func TestCookieExpirySurvivesCacheReload(t *testing.T) {
 	receivedAt := time.Now().Truncate(time.Second).Add(-time.Hour)
 	current := &http.Cookie{Name: "AVS", Value: "current", MaxAge: 7200}
 	old := &http.Cookie{Name: "remember", Value: "legacy", MaxAge: 1}
-	normalizeResponseCookieExpirations([]*http.Cookie{current}, receivedAt)
+	normalizeResponseCookieExpiry(current, receivedAt)
 	c := newSessionTestClient(t, "https://api.example.test")
-	c.setCookies([]*http.Cookie{current, old})
+	c.SetCookies([]*http.Cookie{current, old})
 	if err := c.SaveCookies(); err != nil {
 		t.Fatal(err)
 	}
@@ -247,18 +257,14 @@ func TestLoadCookiesCollapsesDuplicatePersistedCookies(t *testing.T) {
 	c := &Client{cookieFile: dir + "/session.json"}
 
 	longValue := strings.Repeat("a", 218)
-	bloated := make([]*http.Cookie, 0, 600)
+	bloated := make([]CookieData, 0, 600)
 	for range 300 {
 		bloated = append(bloated,
-			&http.Cookie{Name: "remember", Value: longValue},
-			&http.Cookie{Name: "remember_id", Value: longValue},
+			CookieData{Name: "remember", Value: longValue},
+			CookieData{Name: "remember_id", Value: longValue},
 		)
 	}
-	// 绕开去重，直接造一个旧版本那种臃肿会话文件
-	c.cookies = cloneCookies(bloated)
-	if err := c.SaveCookies(); err != nil {
-		t.Fatalf("SaveCookies returned error: %v", err)
-	}
+	writeSessionFile(t, c.cookieFile, bloated)
 
 	reloaded := &Client{cookieFile: c.cookieFile}
 	if err := reloaded.LoadCookies(); err != nil {
@@ -336,5 +342,102 @@ func TestCappedCookiesKeepsNormalJarIntact(t *testing.T) {
 
 	if got := cappedCookies(cookies); len(got) != len(cookies) {
 		t.Fatalf("kept %d cookies, want %d", len(got), len(cookies))
+	}
+}
+
+func setTestResponseCookies(t *testing.T, c *Client, rawURL string, cookies []*http.Cookie) {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionCookieJar{c}.SetCookies(u, cookies)
+}
+
+func TestConcurrentResponseCookiesPersistLatestSnapshot(t *testing.T) {
+	c := &Client{
+		baseURL:    "https://example.test",
+		cookieFile: filepath.Join(newSessionPersistenceTestDir(t), "session.json"),
+	}
+	u, err := url.Parse(c.BaseURL() + "/seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jar := sessionCookieJar{c}
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for worker := range 4 {
+		workers.Go(func() {
+			<-start
+			for n := range 6 {
+				jar.SetCookies(u, []*http.Cookie{{Name: fmt.Sprintf("worker-%d", worker), Value: strconv.Itoa(n)}})
+			}
+		})
+	}
+	close(start)
+	workers.Wait()
+
+	reloaded := &Client{cookieFile: c.cookieFile, baseURL: c.BaseURL()}
+	if err := reloaded.LoadCookies(); err != nil {
+		t.Fatal(err)
+	}
+	cookies := reloaded.GetCookies()
+	if len(cookies) != 4 {
+		t.Fatalf("persisted Cookie count = %d, want 4", len(cookies))
+	}
+	for _, cookie := range cookies {
+		if cookie.Value != "5" {
+			t.Errorf("persisted %s value = %q, want final value", cookie.Name, cookie.Value)
+		}
+	}
+	assertNoTemporarySessionFiles(t, c.cookieFile)
+}
+
+func newSessionPersistenceTestDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "jm-cookie-persistence-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		// Windows 偶尔会在所有会话写入结束后暂时报告目录非空
+		const windowsDirectoryNotEmpty = syscall.Errno(145)
+		const attempts = 10
+		for attempt := range attempts {
+			removeErr := os.RemoveAll(dir)
+			if removeErr == nil {
+				return
+			}
+			if runtime.GOOS != "windows" || !errors.Is(removeErr, windowsDirectoryNotEmpty) || attempt == attempts-1 {
+				t.Errorf("clean up session directory: %v", removeErr)
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+	return dir
+}
+
+func TestSessionWriteCleansUpAfterRenameFailure(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "session.json")
+	if err := os.Mkdir(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSessionFileAtomically(target, []byte("session")); err == nil {
+		t.Fatal("replacing a directory with the session file succeeded")
+	}
+	assertNoTemporarySessionFiles(t, target)
+}
+
+func assertNoTemporarySessionFiles(t *testing.T, sessionPath string) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Dir(sessionPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Name() != filepath.Base(sessionPath) {
+			t.Errorf("unexpected session directory entry %s", entry.Name())
+		}
 	}
 }
