@@ -72,7 +72,7 @@ func (a *CheckInAPI) DailyCheckIn(ctx context.Context, dailyID string) (*DailyCh
 		return nil, fmt.Errorf("签到请求失败: %w", err)
 	}
 
-	plaintext, err := a.client.DecryptResponse(resp, ts)
+	plaintext, err := a.client.DecryptResponseWithOptionalData(resp, ts)
 	if err != nil {
 		return nil, fmt.Errorf("解密签到响应失败: %w", err)
 	}

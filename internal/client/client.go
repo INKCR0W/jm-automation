@@ -188,6 +188,15 @@ func (c *Client) PostForm(ctx context.Context, path string, formData map[string]
 
 // DecryptResponse 解密 API 响应
 func (c *Client) DecryptResponse(resp *Response, ts int64) (string, error) {
+	return decryptResponse(resp, ts, false)
+}
+
+// DecryptResponseWithOptionalData 允许成功响应不包含加密数据
+func (c *Client) DecryptResponseWithOptionalData(resp *Response, ts int64) (string, error) {
+	return decryptResponse(resp, ts, true)
+}
+
+func decryptResponse(resp *Response, ts int64, allowEmptyData bool) (string, error) {
 	bodyText := strings.TrimSpace(string(resp.Body))
 	if strings.HasPrefix(bodyText, "<") {
 		return "", fmt.Errorf("服务器返回 HTML，可能是域名失效或请求特征被拦截 (status=%d, content_type=%s)", resp.StatusCode, resp.Headers.Get("Content-Type"))
@@ -210,6 +219,13 @@ func (c *Client) DecryptResponse(resp *Response, ts int64) (string, error) {
 			return "", fmt.Errorf("API 返回错误 (code=%d): %s", errorResp.Code, errorResp.ErrorMsg)
 		}
 		return "", fmt.Errorf("API 返回错误码: %d", encResp.Code)
+	}
+
+	if allowEmptyData && encResp.Data == "" {
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return "", fmt.Errorf("服务器返回 HTTP 错误 (status=%d)", resp.StatusCode)
+		}
+		return "", nil
 	}
 
 	// 解密数据
